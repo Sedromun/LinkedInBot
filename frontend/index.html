@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>LinkedIn Auto-Poster</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/assets/styles.css" />
+</head>
+<body>
+  <div class="layout">
+    <header class="header">
+      <div class="brand">
+        <span class="logo" aria-hidden="true">in</span>
+        <div>
+          <h1>LinkedIn Auto-Poster</h1>
+          <p class="tagline">Gemini + Google Search · генерация картинки · публикация через API</p>
+        </div>
+      </div>
+      <div id="envBadge" class="env-badge" role="status">Проверка .env…</div>
+    </header>
+
+    <main class="grid">
+      <section class="card panel">
+        <h2>1. Тема</h2>
+        <p class="hint">Опиши тему поста. Можно по-русски — исследование и текст поста всё равно пойдут в нужном формате для LinkedIn.</p>
+        <label class="field">
+          <span>Тема</span>
+          <textarea id="topic" rows="3" placeholder="Например: ускорение инференса трансформеров на проде"></textarea>
+        </label>
+
+        <div class="row options">
+          <label class="check">
+            <input type="checkbox" id="dryRun" />
+            <span>Dry-run — сгенерировать, <strong>не</strong> публиковать в LinkedIn</span>
+          </label>
+          <label class="check">
+            <input type="checkbox" id="noImage" />
+            <span>Без картинки (только текст)</span>
+          </label>
+        </div>
+
+        <label class="field">
+          <span>Формат изображения</span>
+          <select id="imageSize">
+            <option value="16:9" selected>16:9 — широкий (удобно для ленты)</option>
+            <option value="1:1">1:1 — квадрат</option>
+            <option value="9:16">9:16 — вертикальный</option>
+          </select>
+        </label>
+
+        <div class="actions">
+          <button type="button" class="btn secondary" id="btnGenerate">Только текст</button>
+          <button type="button" class="btn primary" id="btnRun">Запустить сценарий</button>
+        </div>
+        <p class="fine-print">«Только текст» вызывает <code>/api/generate</code> (быстрее, без картинки и LinkedIn). «Запустить сценарий» — <code>/api/run</code> с выбранными опциями.</p>
+      </section>
+
+      <section class="card panel">
+        <h2>2. Пост и промпт</h2>
+        <p class="hint">После генерации можно отредактировать текст. Промпт картинки тоже можно подправить перед публикацией.</p>
+        <label class="field">
+          <span>Текст поста</span>
+          <textarea id="postBody" rows="14" placeholder="Сначала нажми «Только текст» или «Запустить сценарий»…"></textarea>
+        </label>
+        <div class="row meta">
+          <span id="charCount" class="pill">0 символов</span>
+          <button type="button" class="btn ghost sm" id="btnCopy">Копировать пост</button>
+        </div>
+        <label class="field">
+          <span>Промпт для картинки (English)</span>
+          <textarea id="imagePrompt" rows="4" placeholder="Появится после генерации…"></textarea>
+        </label>
+        <div class="actions">
+          <button type="button" class="btn accent" id="btnPublish">Опубликовать в LinkedIn</button>
+        </div>
+        <p class="fine-print"><code>/api/publish</code> использует поля выше. Для поста с картинкой нужен заполненный промпт (если не отмечено «Без картинки» на панели слева — оно же учитывается при публикации).</p>
+      </section>
+    </main>
+
+    <section class="card log-section">
+      <h2>Лог</h2>
+      <pre id="log" class="log" aria-live="polite"></pre>
+    </section>
+  </div>
+  <script src="/assets/app.js"></script>
+</body>
+</html>
