@@ -5,3 +5,7 @@ __pycache__/
 .venv/
 venv/
 backend/generated_images/
+backend/data/
+*.db
+*.sqlite
+*.sqlite3

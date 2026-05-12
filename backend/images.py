@@ -42,17 +42,23 @@ def generate_image(prompt: str, aspect_ratio: str = "16:9") -> str:
 
     client = genai.Client(api_key=api_key)
 
-    enhanced_prompt = _enhance_prompt(prompt)
+    enhanced_prompt = _enhance_prompt(prompt, aspect_ratio)
     log.info("Генерирую картинку | model=%s | aspect_ratio=%s | prompt: %s…",
              IMAGE_MODEL, aspect_ratio, enhanced_prompt[:80])
+
+    # Передаём aspect_ratio в image_config; если SDK старый и не знает поле —
+    # ловим и фоллбэчимся на «только в промпте» (в enhanced_prompt уже зашит хинт).
+    config_kwargs: dict = {"response_modalities": ["IMAGE"]}
+    try:
+        config_kwargs["image_config"] = types.ImageConfig(aspect_ratio=aspect_ratio)
+    except (AttributeError, TypeError) as exc:
+        log.warning("SDK не поддерживает ImageConfig.aspect_ratio (%s), полагаюсь на промпт", exc)
 
     try:
         response = client.models.generate_content(
             model=IMAGE_MODEL,
             contents=enhanced_prompt,
-            config=types.GenerateContentConfig(
-                response_modalities=["IMAGE"],
-            ),
+            config=types.GenerateContentConfig(**config_kwargs),
         )
     except Exception:
         log.exception("Ошибка при обращении к Gemini image API (model=%s)", IMAGE_MODEL)
@@ -84,10 +90,21 @@ def _extract_image_bytes(response) -> bytes:
     )
 
 
-def _enhance_prompt(prompt: str) -> str:
-    """Добавляет технические детали стиля для лучшего результата."""
+_ASPECT_HINTS = {
+    "16:9": "Wide cinematic 16:9 landscape aspect ratio.",
+    "9:16": "Vertical 9:16 portrait aspect ratio.",
+    "1:1":  "Square 1:1 aspect ratio.",
+    "4:3":  "Standard 4:3 landscape aspect ratio.",
+    "3:4":  "Vertical 3:4 portrait aspect ratio.",
+}
+
+
+def _enhance_prompt(prompt: str, aspect_ratio: str = "16:9") -> str:
+    """Добавляет технические детали стиля + явный hint про aspect ratio в промпт."""
+    aspect_hint = _ASPECT_HINTS.get(aspect_ratio, f"Aspect ratio {aspect_ratio}.")
     style_suffix = (
-        " Ultra-detailed, professional quality, suitable for LinkedIn. "
+        f" {aspect_hint} "
+        "Ultra-detailed, professional quality, suitable for LinkedIn. "
         "No text, no letters, no watermarks. "
         "Cinematic lighting, sharp focus, 4K quality."
     )
@@ -98,7 +115,7 @@ def _enhance_prompt(prompt: str) -> str:
 
 def _save_image(image_bytes: bytes) -> Path:
     """Сохраняет бинарные данные изображения в OUTPUT_DIR."""
-    OUTPUT_DIR.mkdir(exist_ok=True)
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
     filename = f"post_{int(time.time())}.png"
     filepath = OUTPUT_DIR / filename

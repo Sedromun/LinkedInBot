@@ -1,0 +1,34 @@
+# Виртуалки и кэши
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Git
+.git/
+.gitignore
+
+# Среда разработки
+.env
+.idea/
+.vscode/
+.claude/
+
+# Документация
+README.md
+*.md
+
+# Runtime-артефакты (не нужны в образе — пробрасываются volume)
+backend/data/
+backend/generated_images/
+*.db
+*.sqlite
+*.sqlite3
+
+# Compose
+docker-compose*.yml
+Dockerfile
+.dockerignore

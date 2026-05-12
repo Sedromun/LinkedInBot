@@ -1,0 +1,81 @@
+# ─────────────────────────────────────────────
+#  PROD-стек: Postgres + реальный LinkedIn OAuth
+#  Запуск:  docker compose -f docker-compose.prod.yml up -d --build
+#
+#  В .env должны быть заполнены:
+#    MOCK_LINKEDIN=false
+#    PUBLIC_BASE_URL=http://your-server-ip:8000  (или https://domain)
+#    LINKEDIN_CLIENT_ID, LINKEDIN_CLIENT_SECRET
+#    GOOGLE_API_KEY
+#    TELEGRAM_BOT_TOKEN
+#    POSTGRES_PASSWORD=<сильный пароль>
+# ─────────────────────────────────────────────
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: linkedin-bot-db
+    environment:
+      POSTGRES_DB: linkedin_bot
+      POSTGRES_USER: bot
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bot -d linkedin_bot"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: linkedin-bot:prod
+    container_name: linkedin-bot-api
+    command: uvicorn backend.app:app --host 0.0.0.0 --port 8000 --workers 2
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      MOCK_LINKEDIN: "false"
+      DATABASE_URL: "postgresql+asyncpg://bot:${POSTGRES_PASSWORD}@db:5432/linkedin_bot"
+    volumes:
+      - generated_images:/app/backend/generated_images
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+
+  bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: linkedin-bot:prod
+    container_name: linkedin-bot-tg
+    command: python -m backend.bot.main
+    env_file:
+      - .env
+    environment:
+      MOCK_LINKEDIN: "false"
+      DATABASE_URL: "postgresql+asyncpg://bot:${POSTGRES_PASSWORD}@db:5432/linkedin_bot"
+    volumes:
+      - generated_images:/app/backend/generated_images
+    depends_on:
+      db:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  generated_images:

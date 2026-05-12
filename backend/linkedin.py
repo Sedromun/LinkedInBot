@@ -18,6 +18,10 @@ log = get_logger(__name__)
 
 
 class LinkedInClient:
+    # TODO: мигрировать на новые эндпоинты:
+    #   /v2/assets?action=registerUpload  →  /rest/images?action=initializeUpload
+    #   /v2/ugcPosts                      →  /rest/posts
+    # Текущие пути устарели (UGC + Vector Assets), но ещё работают с LinkedIn-Version: 202502.
     BASE_URL = "https://api.linkedin.com/v2"
 
     def __init__(self, access_token: str, person_urn: str):

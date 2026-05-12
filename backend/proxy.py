@@ -30,7 +30,7 @@ def configure_env_proxy() -> None:
 
     Вызывать ДО создания genai.Client().
     """
-    proxy = os.getenv("HTTP_PROXY", "").strip()
+    proxy = os.getenv("SOCKS5_PROXY", "").strip()
     if not proxy:
         return
     for var in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"):

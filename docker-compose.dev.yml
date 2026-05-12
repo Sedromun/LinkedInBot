@@ -1,0 +1,52 @@
+# ─────────────────────────────────────────────
+#  DEV-стек: SQLite + mock LinkedIn
+#  Запуск:  docker compose -f docker-compose.dev.yml up --build
+# ─────────────────────────────────────────────
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: linkedin-bot:dev
+    container_name: linkedin-bot-api-dev
+    command: uvicorn backend.app:app --host 0.0.0.0 --port 8000 --reload
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      MOCK_LINKEDIN: "true"
+      DATABASE_URL: "sqlite+aiosqlite:////app/backend/data/app.db"
+    volumes:
+      - ./backend:/app/backend                       # hot-reload кода
+      - ./backend/data:/app/backend/data             # SQLite
+      - ./backend/generated_images:/app/backend/generated_images
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+
+  bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: linkedin-bot:dev
+    container_name: linkedin-bot-tg-dev
+    command: python -m backend.bot.main
+    env_file:
+      - .env
+    environment:
+      MOCK_LINKEDIN: "true"
+      DATABASE_URL: "sqlite+aiosqlite:////app/backend/data/app.db"
+    volumes:
+      - ./backend:/app/backend                       # hot-reload кода
+      - ./backend/data:/app/backend/data             # тот же SQLite-файл что у api
+      - ./backend/generated_images:/app/backend/generated_images
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
