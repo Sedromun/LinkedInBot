@@ -33,8 +33,13 @@ class Settings(BaseSettings):
     linkedin_access_token: str = ""    # single-user fallback
     linkedin_person_urn: str = ""
 
-    # Google AI
+    # Google AI (текст)
     google_api_key: str = ""
+
+    # OpenAI (картинки — gpt-image-1)
+    openai_api_key: str = ""
+    image_quality: str = "medium"        # low | medium | high
+    max_images_per_post: int = 2         # 1..4 — верхняя граница для Gemini
 
     # Прокси
     socks5_proxy: str = ""

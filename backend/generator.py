@@ -1,7 +1,11 @@
 """
-generator.py — генерация поста через Gemini 2.5 Flash + встроенный Google Search.
+generator.py — генерация LinkedIn-поста через Gemini 3.1 Flash Lite + Google Search.
 
-Gemini сам решает, что и сколько раз искать — встроенный Google Search.
+Gemini делает 3 вещи:
+  1. Ищет в Google свежие данные/инструменты/бенчмарки по теме
+  2. Пишет грамотный LinkedIn-пост
+  3. Придумывает 1-3 ПРОМПТА ДЛЯ ИНФОГРАФИКИ — не просто декор, а визуализацию
+     ключевых тезисов поста (картинки пойдут в gpt-image-1, который умеет в текст)
 """
 
 import json
@@ -10,63 +14,128 @@ import os
 from google import genai
 from google.genai import types
 
+from backend.config import settings
 from backend.logger import get_logger
 from backend.proxy import configure_env_proxy
 
-configure_env_proxy()  # применяем до создания genai.Client
+configure_env_proxy()
 
 log = get_logger(__name__)
 
+
 # ── Системный промпт ──────────────────────────────────────────────────────────
 
-SYSTEM_PROMPT = """You are an expert LinkedIn content creator specializing in AI, ML, and software engineering topics.
+SYSTEM_PROMPT_TEMPLATE = """You are an expert LinkedIn content creator AND a senior infographic designer specializing in AI, ML, and software engineering topics.
 
-Your task:
-1. Use Google Search to research the given topic thoroughly.
-   Look for: recent news, benchmarks, open-source tools, papers, real-world results.
-2. After research, write a high-quality LinkedIn post in ENGLISH.
-3. Return a JSON object with exactly two fields: "post" and "image_prompt".
+Your task has THREE outputs:
+1. Research the topic with Google Search (recent news, benchmarks, papers, GitHub repos, real-world numbers)
+2. Write a high-quality LinkedIn post in ENGLISH
+3. Design {min_imgs}-{max_imgs} INFOGRAPHIC prompts that will be rendered by OpenAI gpt-image-1
+   (which IS GOOD AT TEXT INSIDE IMAGES — use that capability!)
 
-LinkedIn post requirements:
+Return ONLY a JSON object with two fields: "post" and "image_prompts" (list of strings).
+
+═══════════════════════════════════════════════════════════════════════════
+LINKEDIN POST REQUIREMENTS
+═══════════════════════════════════════════════════════════════════════════
 - Language: ENGLISH
-- Length: 1200–2000 characters (optimal engagement)
+- Length: 1200–2000 characters
 - Structure:
-  • Line 1-2: Strong hook — a surprising fact, counterintuitive insight, or bold statement
-    (must make people stop scrolling!)
+  • Line 1-2: Strong hook — a surprising fact, counterintuitive insight, or bold claim
   • Empty line
-  • 3–5 short paragraphs with key insights (use specific numbers, names, tools)
-  • Each insight on a new line, preceded by a relevant emoji
+  • 3-5 short paragraphs with key insights (specific numbers, tool names, paper titles)
+  • Each insight on its own line, prefixed with a relevant emoji
   • Empty line
-  • Closing thought / call-to-action (1–2 sentences)
+  • 1-2 sentence closing thought / question to the reader
   • Empty line
-  • 5–7 relevant hashtags
-- Style: authoritative but conversational, no corporate speak, no fluff
-- Include specific data points, tool names, paper titles, or GitHub repos you found
-- NO markdown formatting (no **bold**, no #headers) — LinkedIn renders plain text only
+  • 5-7 relevant hashtags
+- Style: authoritative but conversational. NO corporate speak, NO fluff, NO generic claims.
+- Include CONCRETE data points and proper nouns (tool names, paper titles, GitHub repos, %, X faster/cheaper)
+- NO markdown (no **bold**, no #headers) — LinkedIn renders plain text only
 
-image_prompt requirements:
-- Detailed prompt for Imagen (English)
-- Style: modern tech illustration, dark background, glowing elements
-- Must visually represent the topic
-- No text in the image
-- Example: "A futuristic visualization of neural network inference optimization, glowing blue circuits on dark background, abstract transformer architecture with speed lines, modern tech illustration style"
+═══════════════════════════════════════════════════════════════════════════
+IMAGE_PROMPTS — THIS IS CRITICAL — READ CAREFULLY
+═══════════════════════════════════════════════════════════════════════════
+You are designing INFOGRAPHIC SLIDES that ILLUSTRATE the post content,
+NOT decorative tech-art. Think "premium LinkedIn carousel slide" or
+"clean technical presentation slide", NOT "cyberpunk neural network art".
 
-IMPORTANT: Respond ONLY with valid JSON. No explanation before or after.
-Format:
-{
+CHOOSING NUMBER OF IMAGES (between {min_imgs} and {max_imgs}):
+- 1 image: when post has a single dominant idea or one comparison
+- 2 images: when post covers two distinct angles (e.g., "the problem" + "the solution",
+            "before vs after", "concept overview" + "key tools list")
+- 3+ images: only if post has clearly separable sections, each with its own data
+
+EACH IMAGE_PROMPT MUST INCLUDE:
+1. EXPLICIT TITLE TEXT at the top of the slide (use quotes in the prompt)
+2. 3-5 LABELED ELEMENTS (e.g., named cards / numbered items / bars in a chart) — NEVER MORE THAN 5
+3. CONCRETE LABELS for each element — short (2-5 words) — taken from the actual post content
+4. ONE KEY METRIC OR NUMBER per element where applicable
+5. A visual structure: timeline / comparison / hierarchy / numbered grid / bar chart / etc.
+
+VISUAL STYLE (apply to every image_prompt):
+- Modern, clean, professional infographic
+- Dark navy background (#0a0e1a-ish), with bright accent colors: cyan, orange, white
+- LOTS of negative space — uncluttered, breathable
+- Crisp sans-serif typography (think Inter or SF Pro)
+- Subtle icons next to labels (one tiny icon per item)
+- High contrast for readability on mobile feed
+- 16:9 horizontal layout for LinkedIn feed
+- NO photorealistic elements, NO 3D renders, NO "cyberpunk glow", NO abstract neural-network mesh
+- The image should look like it was made in Figma by a senior designer, not generated by AI
+
+ANTI-PATTERNS to AVOID:
+- Cluttered slides with 8+ items (split into 2 cleaner slides instead)
+- Long sentences in the slide (max 5 words per label)
+- Generic stock-image vibes
+- Heavy gradients, glow effects, lens flares
+- Decorative abstract art that doesn't carry information
+
+═══════════════════════════════════════════════════════════════════════════
+EXAMPLE OF A GOOD IMAGE_PROMPT
+═══════════════════════════════════════════════════════════════════════════
+"A clean modern infographic slide, 16:9 aspect ratio, dark navy background (#0a0e1a).
+Title at top, large white sans-serif typography: 'Top 4 LLM Inference Optimizations'.
+Subtitle below in muted gray: 'Production benchmarks, 2026'.
+
+Four horizontal cards arranged in a 2x2 grid, each card has rounded corners,
+subtle border, and contains:
+  - A small line-art icon in the top-left (different color per card)
+  - A short title (3-4 words) in white
+  - One key metric in bright color (cyan or orange)
+
+Card 1 (cyan accent, chip icon): 'vLLM PagedAttention' / '24× throughput'
+Card 2 (orange accent, lightning icon): 'FlashAttention-3' / '75% GPU util'
+Card 3 (cyan accent, rocket icon): 'Speculative Decoding' / '2.5× faster'
+Card 4 (orange accent, compress icon): 'KV-cache 8-bit' / '4× memory'
+
+Lots of negative space between cards. Crisp typography.
+No background patterns, no glow, no clutter. Professional LinkedIn-ready slide."
+
+═══════════════════════════════════════════════════════════════════════════
+OUTPUT FORMAT — STRICT JSON, NO EXPLANATION
+═══════════════════════════════════════════════════════════════════════════
+{{
   "post": "...",
-  "image_prompt": "..."
-}"""
+  "image_prompts": ["...", "..."]
+}}
+"""
+
+
+def _build_system_prompt() -> str:
+    max_imgs = max(1, min(4, settings.max_images_per_post))
+    min_imgs = 1
+    return SYSTEM_PROMPT_TEMPLATE.format(min_imgs=min_imgs, max_imgs=max_imgs)
 
 
 # ── Генерация контента ────────────────────────────────────────────────────────
 
 def generate_post_content(topic: str) -> dict:
     """
-    Исследует тему через Gemini 2.5 Flash + Google Search и генерирует пост.
+    Исследует тему и генерирует пост + список инфографик-промптов.
 
     Returns:
-        dict с ключами 'post' и 'image_prompt'
+        dict с ключами 'post' (str) и 'image_prompts' (list[str], длина 1..N)
     """
     api_key = os.getenv("GOOGLE_API_KEY")
     if not api_key:
@@ -74,19 +143,21 @@ def generate_post_content(topic: str) -> dict:
 
     client = genai.Client(api_key=api_key)
 
-    log.info("Запускаю gemini-3.1-flash-lite для темы: %r", topic)
+    log.info("Запускаю gemini-3.1-flash-lite для темы: %r (max_images=%d)",
+             topic, settings.max_images_per_post)
 
     try:
         response = client.models.generate_content(
             model="gemini-3.1-flash-lite",
             contents=(
                 f"Topic for LinkedIn post: {topic}\n\n"
-                "Research this topic thoroughly using Google Search, find recent data, "
-                "specific numbers, tools and real-world cases. "
-                "Then write an excellent post in English and return JSON."
+                "Research with Google Search, find specific numbers, tools, papers. "
+                "Then write the post AND design infographic slide prompts that visualize "
+                "its key data points (not decorative — they should carry real information). "
+                "Return JSON."
             ),
             config=types.GenerateContentConfig(
-                system_instruction=SYSTEM_PROMPT,
+                system_instruction=_build_system_prompt(),
                 tools=[types.Tool(google_search=types.GoogleSearch())],
                 temperature=1.0,
             ),
@@ -95,67 +166,72 @@ def generate_post_content(topic: str) -> dict:
         log.exception("Ошибка при обращении к Gemini API")
         raise
 
-    raw_text = response.text.strip()
+    raw_text = (response.text or "").strip()
     log.debug("Ответ Gemini (%d символов):\n%s", len(raw_text), raw_text[:500])
 
     return _parse_response(raw_text)
 
 
-# ── Парсинг JSON из ответа ────────────────────────────────────────────────────
+# ── Парсинг JSON ──────────────────────────────────────────────────────────────
 
 def _parse_response(raw: str) -> dict:
-    """
-    Извлекает JSON из текста Gemini.
-
-    Использует raw_decode — корректно обрабатывает случаи когда модель
-    пишет что-то после закрывающей скобки JSON.
-    """
-    # 1. Убираем markdown-обёртку ```json ... ```
+    """Извлекает JSON из ответа Gemini (терпим к markdown-обёртке и тексту после JSON)."""
     if "```" in raw:
         inner_start = raw.find("```") + 3
         inner_end = raw.rfind("```")
         if inner_end > inner_start:
             raw = raw[inner_start:inner_end]
-            # убираем "json" после открывающих кавычек
             if raw.lstrip().startswith("json"):
                 raw = raw.lstrip()[4:]
             raw = raw.strip()
 
-    # 2. Находим начало JSON-объекта
     obj_start = raw.find("{")
     if obj_start == -1:
         log.error("JSON-объект не найден в ответе Gemini. Полный ответ:\n%s", raw)
-        raise RuntimeError(
-            f"Gemini не вернул JSON. Ответ начинается с: {raw[:200]!r}"
-        )
+        raise RuntimeError(f"Gemini не вернул JSON. Ответ начинается с: {raw[:200]!r}")
 
-    # 3. raw_decode парсит первый валидный JSON и игнорирует всё после него
     try:
         decoder = json.JSONDecoder()
         data, _ = decoder.raw_decode(raw, obj_start)
     except json.JSONDecodeError as exc:
         log.error(
-            "Не удалось распарсить JSON из ответа Gemini.\n"
-            "Позиция ошибки: %s\n"
-            "Фрагмент вокруг ошибки: %r\n"
-            "Полный ответ:\n%s",
-            exc,
-            raw[max(0, exc.pos - 40): exc.pos + 40],
-            raw,
+            "Не удалось распарсить JSON.\nПозиция: %s\nКонтекст: %r\nПолный ответ:\n%s",
+            exc, raw[max(0, exc.pos - 40): exc.pos + 40], raw,
         )
         raise RuntimeError(
-            f"JSON parse error от Gemini: {exc}\n"
-            f"Контекст: ...{raw[max(0, exc.pos-40):exc.pos+40]}..."
+            f"JSON parse error: {exc}\n"
+            f"Контекст: ...{raw[max(0, exc.pos - 40):exc.pos + 40]}..."
         ) from exc
 
-    # 4. Проверяем наличие нужных полей
-    missing = [f for f in ("post", "image_prompt") if f not in data]
-    if missing:
-        log.error("В JSON отсутствуют поля %s. Получено: %s", missing, list(data.keys()))
-        raise RuntimeError(
-            f"Gemini вернул JSON без полей {missing}. Есть только: {list(data.keys())}"
-        )
+    # ── Валидация полей и нормализация ──────────────────────────────────────
+    if "post" not in data:
+        raise RuntimeError(f"Gemini вернул JSON без поля 'post'. Получено: {list(data.keys())}")
 
-    log.info("Пост сгенерирован (%d символов), промпт картинки: %r",
-             len(data["post"]), data["image_prompt"][:80])
+    # Совместимость со старым форматом: image_prompt → image_prompts
+    if "image_prompts" not in data:
+        if "image_prompt" in data and data["image_prompt"]:
+            data["image_prompts"] = [data["image_prompt"]]
+            del data["image_prompt"]
+        else:
+            data["image_prompts"] = []
+
+    prompts = data["image_prompts"]
+    if not isinstance(prompts, list):
+        raise RuntimeError(f"image_prompts должен быть list, получили: {type(prompts).__name__}")
+
+    # Отфильтруем пустые и обрежем до максимума
+    prompts = [p.strip() for p in prompts if isinstance(p, str) and p.strip()]
+    max_imgs = max(1, min(4, settings.max_images_per_post))
+    if len(prompts) > max_imgs:
+        log.info("Обрезаю список картинок: %d → %d", len(prompts), max_imgs)
+        prompts = prompts[:max_imgs]
+    data["image_prompts"] = prompts
+
+    log.info(
+        "Пост сгенерирован (%d символов), картинок к нему: %d",
+        len(data["post"]), len(prompts),
+    )
+    for i, p in enumerate(prompts, 1):
+        log.debug("Image prompt #%d: %s…", i, p[:120].replace("\n", " "))
+
     return data

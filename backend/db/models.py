@@ -111,8 +111,12 @@ class Generation(Base):
 
     topic:             Mapped[str]            = mapped_column(Text, nullable=False)
     post_text:         Mapped[Optional[str]]  = mapped_column(Text, nullable=True)
-    image_prompt:      Mapped[Optional[str]]  = mapped_column(Text, nullable=True)
-    image_path:        Mapped[Optional[str]]  = mapped_column(String(512), nullable=True)
+
+    # JSON: list[str] — промпты для каждой картинки
+    image_prompts_json: Mapped[str]           = mapped_column(Text, default="[]", nullable=False)
+    # JSON: list[str] — пути к сгенерированным PNG
+    image_paths_json:   Mapped[str]           = mapped_column(Text, default="[]", nullable=False)
+
     linkedin_post_id:  Mapped[Optional[str]]  = mapped_column(String(128), nullable=True)
 
     cost_cents: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
@@ -127,6 +131,30 @@ class Generation(Base):
     )
 
     user: Mapped["User"] = relationship(back_populates="generations")
+
+    # ── Удобные геттеры/сеттеры для JSON-полей ──────────────────────────────
+
+    @property
+    def image_prompts(self) -> list[str]:
+        try:
+            return json.loads(self.image_prompts_json or "[]")
+        except json.JSONDecodeError:
+            return []
+
+    @image_prompts.setter
+    def image_prompts(self, value: list[str]) -> None:
+        self.image_prompts_json = json.dumps(value)
+
+    @property
+    def image_paths(self) -> list[str]:
+        try:
+            return json.loads(self.image_paths_json or "[]")
+        except json.JSONDecodeError:
+            return []
+
+    @image_paths.setter
+    def image_paths(self, value: list[str]) -> None:
+        self.image_paths_json = json.dumps(value)
 
 
 class Payment(Base):

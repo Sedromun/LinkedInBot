@@ -8,7 +8,7 @@ from aiogram import F, Router
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import CallbackQuery, FSInputFile, Message
+from aiogram.types import CallbackQuery, FSInputFile, InputMediaPhoto, Message
 
 from backend.bot import keyboards, messages
 from backend.bot.deps import get_bot
@@ -268,6 +268,44 @@ async def on_topic_received(message: Message, state: FSMContext) -> None:
     await _run_generation(message, message.from_user.id, topic)
 
 
+async def _send_post_to_user(
+    reply_to: Message,
+    image_paths: list[str],
+    post_text: str,
+) -> None:
+    """
+    Отправляет юзеру результат: картинки + текст.
+
+    Логика:
+      - 0 картинок: просто шлём текст
+      - 1 картинка: photo с caption (если текст влезает) или photo + отдельным сообщением
+      - 2+ картинок: media_group (альбом) + текст отдельным сообщением
+    """
+    if not image_paths:
+        await reply_to.answer(post_text)
+        return
+
+    if len(image_paths) == 1:
+        try:
+            caption = post_text if len(post_text) <= 1024 else post_text[:1024]
+            await reply_to.answer_photo(FSInputFile(image_paths[0]), caption=caption)
+            if len(post_text) > 1024:
+                await reply_to.answer(post_text[1024:])
+        except Exception:
+            log.exception("Не удалось отправить фото, шлю только текст")
+            await reply_to.answer(post_text)
+        return
+
+    # Несколько картинок — media_group (макс 10 в TG)
+    try:
+        media = [InputMediaPhoto(media=FSInputFile(p)) for p in image_paths[:10]]
+        await reply_to.answer_media_group(media)
+        await reply_to.answer(post_text)
+    except Exception:
+        log.exception("Не удалось отправить media_group, шлю только текст")
+        await reply_to.answer(post_text)
+
+
 async def _run_generation(reply_to: Message, tg_id: int, topic: str) -> None:
     """Запускает pipeline, шлёт уведомление с прогрессом и результатом."""
     progress = await reply_to.answer(
@@ -297,20 +335,8 @@ async def _run_generation(reply_to: Message, tg_id: int, topic: str) -> None:
         )
         return
 
-    # Шлём картинку (если есть) + текст
-    if result.image_path:
-        try:
-            await reply_to.answer_photo(
-                FSInputFile(result.image_path),
-                caption=result.post_text[:1024],  # caption-лимит TG
-            )
-            if len(result.post_text) > 1024:
-                await reply_to.answer(result.post_text[1024:])
-        except Exception:
-            log.exception("Не удалось отправить фото, шлю только текст")
-            await reply_to.answer(result.post_text)
-    else:
-        await reply_to.answer(result.post_text)
+    # Шлём картинки (одну или несколько) + текст
+    await _send_post_to_user(reply_to, result.image_paths, result.post_text)
 
     template = messages.GENERATION_DONE_MOCK if settings.mock_linkedin else messages.GENERATION_DONE
     await reply_to.answer(

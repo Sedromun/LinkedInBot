@@ -34,13 +34,25 @@
 |---|---|
 | Telegram bot | [aiogram v3](https://docs.aiogram.dev) (async) |
 | Web / OAuth callback | [FastAPI](https://fastapi.tiangolo.com) + uvicorn |
-| LLM (текст) | Gemini 3.1 Flash Lite + встроенный Google Search |
-| LLM (картинки) | Gemini 3.1 Flash Image Preview |
-| LinkedIn API | `/v2/ugcPosts` + `/v2/assets` (OAuth 2.0) |
+| LLM (текст + дизайн промптов картинок) | Gemini 3.1 Flash Lite + встроенный Google Search |
+| Картинки (инфографика) | **OpenAI `gpt-image-1`** — рисует чёткий текст внутри картинки |
+| LinkedIn API | `/v2/ugcPosts` + `/v2/assets` (OAuth 2.0, multi-image) |
 | Хранилище | SQLite (DEV) / Postgres 16 (PROD), SQLAlchemy 2.0 async |
 | Шедулер | APScheduler (`AsyncIOScheduler`) |
 | Контейнеризация | Docker + docker compose |
 | Конфиг | pydantic-settings |
+
+### Почему два разных LLM-провайдера
+
+**Gemini** хорош в reasoning + у него есть встроенный Google Search → используем для написания поста и для дизайна промптов картинок.
+
+**OpenAI gpt-image-1** — единственная на данный момент image-модель, которая корректно рисует **читаемый текст внутри картинки** (заголовки, цифры, лейблы карточек). Это критично потому что картинки в нашем боте — не декорация, а инфографики с реальной информацией.
+
+Pipeline для одного поста:
+```
+тема → Gemini ── текст поста ──┐
+              └─ image_prompts ─┴─ параллельно ─→ gpt-image-1 × N → инфографики
+```
 
 ---
 
@@ -59,12 +71,12 @@
                                    │
                 ┌──────────────────┼──────────────────────┐
                 ▼                  ▼                      ▼
-        ┌──────────────┐   ┌────────────────┐   ┌────────────────┐
-        │  Postgres /  │   │ Gemini 3.1     │   │ LinkedIn API   │
-        │   SQLite     │   │ + Google Search│   │ (OAuth + post) │
-        │              │   │ + Image gen    │   └────────────────┘
-        │  users       │   └────────────────┘
-        │  generations │
+        ┌──────────────┐   ┌────────────────┐   ┌────────────────┐   ┌────────────────┐
+        │  Postgres /  │   │ Gemini 3.1     │   │ OpenAI         │   │ LinkedIn API   │
+        │   SQLite     │   │ + Google Search│   │ gpt-image-1    │   │ (OAuth + post) │
+        │              │   │ (текст +       │   │ (инфографики)  │   └────────────────┘
+        │  users       │   │  image prompts)│   └────────────────┘
+        │  generations │   └────────────────┘
         │  payments    │
         └──────────────┘
                 ▲
@@ -117,10 +129,11 @@ git clone <repo-url> && cd LinkedIn
 cp .env.example .env
 ```
 
-Заполни в `.env` только три строки:
+Заполни в `.env`:
 ```env
 MOCK_LINKEDIN=true
 GOOGLE_API_KEY=AIza...              # https://aistudio.google.com/app/apikey
+OPENAI_API_KEY=sk-...               # https://platform.openai.com/api-keys (нужен Billing)
 TELEGRAM_BOT_TOKEN=12345:abc...     # @BotFather → /newbot
 ```
 
@@ -196,7 +209,10 @@ LinkedIn принимает HTTP-redirect только для тестовых �
 | Переменная | DEV | PROD | Описание |
 |---|---|---|---|
 | `MOCK_LINKEDIN` | `true` | `false` | Включает mock-режим |
-| `GOOGLE_API_KEY` | ✅ | ✅ | [aistudio.google.com](https://aistudio.google.com/app/apikey) |
+| `GOOGLE_API_KEY` | ✅ | ✅ | [aistudio.google.com](https://aistudio.google.com/app/apikey) — Gemini для текста |
+| `OPENAI_API_KEY` | ✅ | ✅ | [platform.openai.com](https://platform.openai.com/api-keys) — gpt-image-1 для картинок |
+| `IMAGE_QUALITY` | `medium` | `medium` | `low` ($0.011) / `medium` ($0.04) / `high` ($0.17) на картинку |
+| `MAX_IMAGES_PER_POST` | `2` | `2` | Сколько максимум картинок Gemini может попросить (1-4) |
 | `TELEGRAM_BOT_TOKEN` | ✅ | ✅ | [@BotFather](https://t.me/BotFather) → /newbot |
 | `LINKEDIN_CLIENT_ID` | — | ✅ | LinkedIn App → Auth |
 | `LINKEDIN_CLIENT_SECRET` | — | ✅ | LinkedIn App → Auth |
@@ -271,7 +287,7 @@ LinkedIn принимает HTTP-redirect только для тестовых �
   │    1. проверить балaнс ≥ $1
   │    2. создать Generation(PENDING)
   │    3. generate_post_content() — Gemini + Google Search
-  │    4. generate_image() — Gemini image gen
+  │    4. generate_images() — gpt-image-1 (параллельно N штук)
   │    5. (если PROD) LinkedInClient.publish() → post_id
   │    6. charge_for_generation() — списать $1
   │    7. update Generation → PUBLISHED
@@ -419,7 +435,7 @@ LinkedIn/
     ├── requirements.txt
     │
     ├── generator.py            # Gemini text gen + Google Search grounding
-    ├── images.py               # Gemini image gen → PNG в generated_images/
+    ├── images.py               # OpenAI gpt-image-1 → PNG в generated_images/ (multi-image)
     ├── linkedin.py             # LinkedInClient: upload_image + publish
     │
     ├── bot/                    # ── Telegram bot ───────────────────────
@@ -455,10 +471,11 @@ LinkedIn/
 | Поменять цену | `.env` → `COST_PER_POST_CENTS` |
 | Добавить новую категорию интересов | `backend/services/interests.py` → INTERESTS dict |
 | Сменить время напоминания | `.env` → `DAILY_NOTIFICATION_TIME` |
-| Сменить LLM-модель | `backend/generator.py` → `model="..."` |
+| Сменить text-LLM | `backend/generator.py` → `model="gemini-3.1-flash-lite"` |
 | Сменить image-модель | `backend/images.py` → `IMAGE_MODEL` |
-| Подкрутить системный промпт | `backend/generator.py` → `SYSTEM_PROMPT` |
-| Стиль картинок | `backend/images.py` → `_enhance_prompt()` |
+| Подкрутить инструкции к посту/инфографике | `backend/generator.py` → `SYSTEM_PROMPT_TEMPLATE` |
+| Качество картинок (цена/qual) | `.env` → `IMAGE_QUALITY=low|medium|high` |
+| Сколько картинок генерить | `.env` → `MAX_IMAGES_PER_POST=1..4` |
 
 ---
 
@@ -590,9 +607,19 @@ URL в LinkedIn App и `PUBLIC_BASE_URL` в `.env` должны совпадат
 
 Решение для прода: либо запускать бот и api в одном процессе (объединить в одном `main.py` через `asyncio.gather()`), либо сделать pub/sub через Redis.
 
-### Картинка не генерируется (Imagen ошибка)
+### Картинки не генерируются (OpenAI ошибка)
 
-Imagen 3/Gemini image требует включённого Billing в Google Cloud Console. Бесплатный tier `aistudio.google.com` поддерживает Gemini Flash, но **не** image generation. Если получаешь 403/Quota — включи billing в Google Cloud.
+`gpt-image-1` требует включённого **Billing** на аккаунте OpenAI. Если получаешь 403/quota — зайди в [platform.openai.com → Billing](https://platform.openai.com/account/billing/overview) и добавь карту.
+
+Если в логах `400 invalid_value: size`/`quality` — это значит SDK устарел. Проверь что `openai>=1.50.0` в `backend/requirements.txt`.
+
+### Картинки шакального качества или без текста
+
+Скорее всего стоит `IMAGE_QUALITY=low`. Подними до `medium` (по умолчанию) или `high`. Учти что `high` стоит ~$0.17 за картинку — при 2 картинках на пост это $0.34, что больше $1-долларовой цены за пост → подкрути `COST_PER_POST_CENTS` в `.env`.
+
+### Gemini вернул слишком много / нерелевантных картинок
+
+Подкрути `MAX_IMAGES_PER_POST` в `.env` (по умолчанию 2). Системный промпт уже инструктирует Gemini выбирать оптимальное количество в зависимости от поста.
 
 ---
 

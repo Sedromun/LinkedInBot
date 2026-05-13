@@ -103,20 +103,16 @@ class LinkedInClient:
 
     # ── Создать пост ─────────────────────────────────────────────────────────
 
-    def create_post(self, text: str, asset_urn: str | None = None) -> str:
+    def create_post(self, text: str, asset_urns: list[str] | None = None) -> str:
         """
         Создаёт пост в LinkedIn.
-        Если передан asset_urn — публикует с картинкой.
-        Возвращает ID поста.
+        Если передан список asset_urns — публикует с одной или несколькими картинками.
+        Возвращает X-RestLi-Id (ID поста).
         """
-        if asset_urn:
+        asset_urns = asset_urns or []
+        if asset_urns:
             media_category = "IMAGE"
-            media = [
-                {
-                    "status": "READY",
-                    "media": asset_urn,
-                }
-            ]
+            media = [{"status": "READY", "media": urn} for urn in asset_urns]
         else:
             media_category = "NONE"
             media = []
@@ -138,23 +134,32 @@ class LinkedInClient:
 
         resp = self.session.post(f"{self.BASE_URL}/ugcPosts", json=payload)
         self._raise_for_status(resp, "Создание поста")
-
-        post_id = resp.headers.get("X-RestLi-Id", "unknown")
-        return post_id
+        return resp.headers.get("X-RestLi-Id", "unknown")
 
     # ── Удобный комбо-метод ──────────────────────────────────────────────────
 
-    def publish(self, text: str, image_path: str | None = None) -> str:
+    def publish(self, text: str, image_paths: list[str] | str | None = None) -> str:
         """
-        Полный цикл: [загрузить картинку] → опубликовать пост.
-        Возвращает ID поста.
-        """
-        asset_urn = None
-        if image_path and os.path.exists(image_path):
-            asset_urn = self.upload_image(image_path)
+        Полный цикл: [загрузить картинки] → опубликовать пост.
 
-        post_id = self.create_post(text, asset_urn)
-        return post_id
+        image_paths может быть:
+          - None или []   — пост без картинок
+          - str           — путь к одной картинке (для обратной совместимости)
+          - list[str]     — несколько картинок
+        """
+        if image_paths is None:
+            image_paths = []
+        elif isinstance(image_paths, str):
+            image_paths = [image_paths]
+
+        asset_urns: list[str] = []
+        for path in image_paths:
+            if path and os.path.exists(path):
+                asset_urns.append(self.upload_image(path))
+            else:
+                log.warning("Картинка не найдена, пропускаю: %s", path)
+
+        return self.create_post(text, asset_urns)
 
     # ── Вспомогалка: красивые ошибки ────────────────────────────────────────
 
