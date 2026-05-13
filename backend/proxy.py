@@ -4,6 +4,10 @@ proxy.py — централизованная настройка SOCKS5 прок
 Читает SOCKS5_PROXY из .env и применяет ко всем HTTP-клиентам:
   - requests  (auth.py, linkedin.py)
   - httpx/google-genai  (generator.py, images.py) — через env-переменные
+
+Telegram Bot API (long polling, отправка сообщений): тот же URL задаётся в .env как
+SOCKS5_PROXY; `backend.bot.main` подключает его через aiogram AiohttpSession(proxy=...).
+Нужен пакет aiohttp-socks (см. backend/requirements.txt).
 """
 
 import os

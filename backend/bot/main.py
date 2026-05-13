@@ -14,6 +14,7 @@ import asyncio
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
+from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
 
@@ -33,9 +34,15 @@ async def main() -> None:
 
     await init_db()
 
+    proxy = settings.socks5_proxy.strip()
+    telegram_session = AiohttpSession(proxy=proxy) if proxy else None
+    if proxy:
+        log.info("Telegram Bot API: SOCKS5 (SOCKS5_PROXY)")
+
     bot = Bot(
         token=settings.telegram_bot_token,
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+        session=telegram_session,
     )
     set_bot(bot)  # делаем доступным для FastAPI колбэка
 
