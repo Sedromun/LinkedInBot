@@ -1,178 +1,238 @@
 """
-Тексты сообщений для бота — собраны в одном месте для удобства редактирования.
+Bot message templates — all in English.
 """
 
-WELCOME = """\
-👋 Привет, {name}!
+# ── /start ────────────────────────────────────────────────────────────────────
 
-Я бот, который пишет посты в твой LinkedIn на автопилоте.
+WELCOME_NEW = """\
+👋 Hey, {name}!
 
-<b>Как это работает:</b>
-1️⃣ Ты привязываешь свой LinkedIn (через официальный OAuth — мы не видим твой пароль)
-2️⃣ Выбираешь интересные тебе темы (AI, ML, Crypto…)
-3️⃣ Каждый день в 18:00 я предлагаю тебе сгенерировать пост
-4️⃣ За $1 я сам исследую тему в интернете, пишу пост и рисую к нему картинку, и публикую от твоего имени
+I'm a bot that writes and publishes LinkedIn posts on autopilot.
 
-<b>Стартовый баланс:</b> {balance}$ (хватит на {posts} постов)
-<b>Цена поста:</b> {cost}$
+<b>How it works:</b>
+1️⃣ Connect your LinkedIn — takes 30 seconds
+2️⃣ Pick topics you're interested in (AI, ML, Crypto…)
+3️⃣ Every day at 6 PM I'll suggest a topic for a new post
+4️⃣ For $1 I research the topic, write the post, generate infographic images and publish it — all from your account
 
-Жми кнопки ниже 👇
+<b>Starting balance:</b> ${balance:.2f} ({posts} posts)
+<b>Price per post:</b> ${cost:.2f}
+
+Let's start by connecting LinkedIn 👇
 """
+
+WELCOME_AUTHORIZED = """\
+👋 Hey, {name}!
+
+<b>LinkedIn connected</b> ✅
+<b>Balance:</b> ${balance:.2f} ({posts} posts)
+
+Hit "Generate post" or wait for the daily reminder at 6 PM 👇
+"""
+
+# ── LinkedIn OAuth ─────────────────────────────────────────────────────────────
 
 OAUTH_INSTRUCTIONS = """\
-🔗 <b>Привязка LinkedIn</b>
+🔗 <b>Connect LinkedIn</b>
 
-Нажми на ссылку ниже, залогинься в LinkedIn и нажми «Allow».
-После этого я автоматически сохраню токен и пришлю подтверждение сюда.
+Click the link below, log into LinkedIn and click "Allow".
+I'll save your token automatically and send you a confirmation here.
 
-<a href="{url}">👉 Привязать LinkedIn</a>
+<a href="{url}">👉 Connect LinkedIn</a>
 
-<i>Срок действия токена — 60 дней.</i>
+<i>We never see your password — this is standard OAuth, just like "Sign in with Google".</i>
+<i>Token is valid for 60 days.</i>
 """
 
 OAUTH_SUCCESS_MOCK = """\
-🧪 <b>DEV-режим:</b> LinkedIn «привязан» (mock-токен).
+🧪 <b>DEV mode:</b> LinkedIn "connected" (mock token).
 
-Посты будут генериться по-настоящему (Gemini + картинка), но в LinkedIn ничего <b>не публикуется</b> — только сохраняется в БД.
+Posts will be generated for real (Gemini + images) but <b>not published</b> to LinkedIn.
 
-Теперь можешь:
-• /generate — попробовать сгенерить пост
-• /interests — выбрать темы
-• /balance — посмотреть баланс
+You can now:
+• /generate — try generating a post
+• /interests — choose your topics
+• /balance — check balance
 """
 
 OAUTH_SUCCESS = """\
-✅ LinkedIn успешно привязан!
+✅ <b>LinkedIn connected successfully!</b>
 
-Теперь ты можешь:
-• /generate — сгенерировать пост прямо сейчас
-• /interests — изменить темы
-• /balance — посмотреть баланс
-• /settings — выключить ежедневные напоминания
+I can now publish posts on your behalf.
 
-Я буду писать тебе каждый день в 18:00 с предложением поста.
+Next step — choose your topics:
+👉 /interests
+
+Or hit /generate right now!
 """
 
 OAUTH_ALREADY_DONE = """\
-✅ Ты уже привязал LinkedIn.
+✅ LinkedIn is already connected.
 
-Чтобы перевязать — обратись к админу, либо удали данные через /delete_me.
+If you want to reconnect, contact the admin.
 """
 
 NOT_AUTHORIZED = """\
-🔗 Для генерации постов нужно сначала привязать LinkedIn.
+🔗 You need to connect LinkedIn before generating posts.
 
-Жми /start и проследуй по инструкции.
+Go to /start and choose "Connect LinkedIn".
 """
 
-CHOOSE_INTERESTS = """\
-🎯 <b>Выбери темы, которые тебе интересны</b>
+# ── Interests ──────────────────────────────────────────────────────────────────
 
-Я буду подбирать посты исходя из них. Можно выбрать несколько.
-Когда закончишь — нажми «Готово».
+CHOOSE_INTERESTS = """\
+🎯 <b>Choose your topics</b>
+
+I'll use these to suggest post ideas. You can pick multiple.
+When you're done — hit "Done".
 """
 
 INTERESTS_SAVED = """\
-✅ Сохранено! Твои интересы: {labels}
+✅ Saved! Your topics: {labels}
 
-Дальше:
-• /generate — сгенерировать пост
-• /start — главное меню
+Now:
+• /generate — create a post right now
+• Or wait for the daily reminder at 6 PM
 """
 
-INTERESTS_EMPTY = """\
-⚠️ Нужно выбрать хотя бы одну тему.
-"""
+INTERESTS_EMPTY = "⚠️ Please select at least one topic."
+
+# ── Balance / payments ────────────────────────────────────────────────────────
 
 BALANCE_INFO = """\
-💰 <b>Баланс:</b> ${balance:.2f}
-<b>Цена поста:</b> ${cost:.2f}
-<b>Хватит на:</b> {posts} постов
+💰 <b>Balance:</b> ${balance:.2f}
+<b>Price per post:</b> ${cost:.2f}
+<b>Regenerate text:</b> ${regen:.2f}
+<b>Posts available:</b> {posts}
 
-Нажми «Пополнить» для пополнения через mock-платёж.
+Hit "Top up" to add funds.
 """
 
 TOPUP_PROMPT = """\
-💵 На сколько пополнить?
-
-Выбери сумму или введи свою (просто число в долларах).
+💵 How much would you like to add?
 """
 
 TOPUP_SUCCESS = """\
-✅ Баланс пополнен на ${amount:.2f}
-<b>Текущий баланс:</b> ${balance:.2f}
+✅ Added ${amount:.2f} to your balance.
+<b>Current balance:</b> ${balance:.2f}
 """
 
 INSUFFICIENT_FUNDS = """\
-😔 Недостаточно средств.
+😔 <b>Insufficient funds.</b>
 
-Нужно: ${need:.2f}
-На балансе: ${balance:.2f}
+Required: ${need:.2f}
+Balance: ${balance:.2f}
 
-Жми /balance → «Пополнить» чтобы добавить денег.
+Go to /balance → "Top up" to add funds.
 """
+
+# ── Generate flow ─────────────────────────────────────────────────────────────
 
 GENERATE_PROMPT = """\
-🎯 <b>Тема поста</b>
+🎯 <b>What should we write about?</b>
 
-Введи свою тему (например: <i>"GPU inference cost optimization"</i>) или нажми «Подобрать из интересов».
+Type a topic (e.g. <i>"GPU inference cost optimization"</i>)
+or hit "🎲 Pick from my interests".
 """
 
-GENERATING = """\
-🤖 Генерирую пост на тему <i>«{topic}»</i>…
+TOPIC_SUGGESTION = """\
+🎲 <b>How about this topic:</b>
 
-Что происходит:
-  1️⃣ Gemini ищет в Google и пишет текст
-  2️⃣ Дизайнит промпты под инфографику
-  3️⃣ gpt-image-1 рисует картинки
+<i>"{topic}"</i>
 
-Это займёт 30-90 секунд.
+Want to generate a post on this?
 """
 
-GENERATION_DONE = """\
-✅ <b>Пост опубликован!</b>
+GENERATING_TEXT = """\
+⏳ <b>Writing the post…</b>
 
-🔗 <a href="https://www.linkedin.com/feed/update/{post_id}/">Посмотреть в LinkedIn</a>
+Topic: <i>"{topic}"</i>
 
-💸 Списано: ${cost:.2f}
-💰 Остаток: ${balance:.2f}
+Gemini is searching Google for fresh data and writing the post — ~20–40 sec.
 """
 
-GENERATION_DONE_MOCK = """\
-✅ <b>Пост сгенерирован</b> (DEV-режим — в LinkedIn не отправлен)
+TEXT_PREVIEW_HEADER = """\
+📝 <b>Text is ready! Here's what I came up with:</b>
+"""
 
-post_id: <code>{post_id}</code>
+TEXT_PREVIEW_FOOTER = """\
 
-💸 Списано: ${cost:.2f}
-💰 Остаток: ${balance:.2f}
+<i>Characters: {chars}</i>
+
+Looks good? I'll generate the images next.
+Or regenerate the text for ${regen:.2f}.
+"""
+
+GENERATING_IMAGES = """\
+🎨 <b>Text approved! Drawing infographics…</b>
+
+Generating {count} image{suffix} — ~30–60 sec.
+"""
+
+FINAL_PREVIEW_HEADER = """\
+✨ <b>Post is ready! Publish to LinkedIn?</b>
+"""
+
+FINAL_PREVIEW_FOOTER = """\
+
+💰 Will be charged: ${cost:.2f} (remaining: ${balance:.2f})
+"""
+
+PUBLISHED = """\
+🚀 <b>Published to LinkedIn!</b>
+
+🔗 <a href="https://www.linkedin.com/feed/update/{post_id}/">View on LinkedIn</a>
+
+💸 Charged: ${cost:.2f} · Balance: ${balance:.2f}
+"""
+
+PUBLISHED_MOCK = """\
+✅ <b>Post generated</b> (DEV mode — not sent to LinkedIn)
+
+mock post_id: <code>{post_id}</code>
+
+💸 Charged: ${cost:.2f} · Balance: ${balance:.2f}
+"""
+
+PUBLISH_CANCELLED = """\
+❌ Cancelled. Post not published, nothing charged.
+
+/generate to start over.
+"""
+
+REGEN_CHARGED = """\
+🔄 Charged ${regen:.2f} for regeneration. Writing a new text…
 """
 
 GENERATION_FAILED = """\
-❌ <b>Не удалось сгенерировать пост</b>
+❌ <b>Generation failed</b>
 
-Ошибка: <code>{error}</code>
+{error}
 
-Деньги <b>не списаны</b>. Попробуй ещё раз через /generate.
+Nothing was charged. Try again: /generate
 """
+
+# ── Daily nudge ───────────────────────────────────────────────────────────────
 
 DAILY_NUDGE = """\
-🔔 <b>Время для нового поста!</b>
+🔔 <b>Time for a new post!</b>
 
-Я могу сгенерить пост на одну из твоих тем: <i>{topics}</i>
+Here's a topic from your interests: <i>{topics}</i>
 
-💰 Баланс: ${balance:.2f} (хватит на {posts} постов)
+💰 Balance: ${balance:.2f} ({posts} posts available)
 
-Жми /generate чтобы начать.
+👉 /generate
 """
 
+# ── Settings ──────────────────────────────────────────────────────────────────
+
 SETTINGS_INFO = """\
-⚙️ <b>Настройки</b>
+⚙️ <b>Settings</b>
 
-Ежедневные напоминания: <b>{daily}</b>
-Твои интересы: {interests}
+Daily reminders: <b>{daily}</b>
+Your topics: {interests}
 
-Доступные команды:
-/interests — поменять интересы
-/notifications — вкл/выкл ежедневные напоминания
-/balance — баланс
+/interests — change topics
+/notifications — toggle daily reminders
+/balance — balance
 """

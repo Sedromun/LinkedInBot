@@ -1,18 +1,26 @@
 """
-generator.py — генерация LinkedIn-поста через Gemini 3.1 Flash Lite + Google Search.
+generator.py — генерация LinkedIn-поста с fallback-цепочкой провайдеров.
 
-Gemini делает 3 вещи:
-  1. Ищет в Google свежие данные/инструменты/бенчмарки по теме
-  2. Пишет грамотный LinkedIn-пост
-  3. Придумывает 1-3 ПРОМПТА ДЛЯ ИНФОГРАФИКИ — не просто декор, а визуализацию
-     ключевых тезисов поста (картинки пойдут в gpt-image-1, который умеет в текст)
+Fallback-цепочка (текст):
+  1. gemini-3.1-flash-lite      (Google, дешёвый, со встроенным Google Search)
+  2. gemini-3.1-pro-preview     (Google, мощнее)
+  3. gemini-3-pro-preview       (Google, ещё один fallback)
+  4. gpt-4.5-mini               (OpenAI, без web search)
+  5. gpt-5.4                    (OpenAI)
+  6. gpt-5.5                    (OpenAI)
+
+Переключение: только на 503 / UNAVAILABLE / высокая нагрузка.
 """
 
 import json
 import os
+from dataclasses import dataclass
+from enum import Enum
+from typing import Callable
 
 from google import genai
 from google.genai import types
+from openai import OpenAI
 
 from backend.config import settings
 from backend.logger import get_logger
@@ -23,12 +31,36 @@ configure_env_proxy()
 log = get_logger(__name__)
 
 
+# ── Цепочка моделей ───────────────────────────────────────────────────────────
+
+class Provider(str, Enum):
+    GEMINI = "gemini"
+    OPENAI = "openai"
+
+
+@dataclass
+class ModelConfig:
+    provider:     Provider
+    model_id:     str
+    has_search:   bool = False    # умеет ли делать web-search сам
+
+
+TEXT_MODEL_CHAIN: list[ModelConfig] = [
+    ModelConfig(Provider.GEMINI, "gemini-3.1-flash-lite",  has_search=True),
+    ModelConfig(Provider.GEMINI, "gemini-3.1-pro-preview", has_search=True),
+    ModelConfig(Provider.GEMINI, "gemini-3-pro-preview",   has_search=True),
+    ModelConfig(Provider.OPENAI, "gpt-4.5-mini"),
+    ModelConfig(Provider.OPENAI, "gpt-5.4"),
+    ModelConfig(Provider.OPENAI, "gpt-5.5"),
+]
+
+
 # ── Системный промпт ──────────────────────────────────────────────────────────
 
 SYSTEM_PROMPT_TEMPLATE = """You are an expert LinkedIn content creator AND a senior infographic designer specializing in AI, ML, and software engineering topics.
 
 Your task has THREE outputs:
-1. Research the topic with Google Search (recent news, benchmarks, papers, GitHub repos, real-world numbers)
+1. Research the topic {search_instruction}
 2. Write a high-quality LinkedIn post in ENGLISH
 3. Design {min_imgs}-{max_imgs} INFOGRAPHIC prompts that will be rendered by OpenAI gpt-image-1
    (which IS GOOD AT TEXT INSIDE IMAGES — use that capability!)
@@ -54,66 +86,50 @@ LINKEDIN POST REQUIREMENTS
 - NO markdown (no **bold**, no #headers) — LinkedIn renders plain text only
 
 ═══════════════════════════════════════════════════════════════════════════
-IMAGE_PROMPTS — THIS IS CRITICAL — READ CAREFULLY
+IMAGE_PROMPTS — INFOGRAPHIC SLIDE DESIGN
 ═══════════════════════════════════════════════════════════════════════════
-You are designing INFOGRAPHIC SLIDES that ILLUSTRATE the post content,
-NOT decorative tech-art. Think "premium LinkedIn carousel slide" or
-"clean technical presentation slide", NOT "cyberpunk neural network art".
-
-CHOOSING NUMBER OF IMAGES (between {min_imgs} and {max_imgs}):
-- 1 image: when post has a single dominant idea or one comparison
-- 2 images: when post covers two distinct angles (e.g., "the problem" + "the solution",
-            "before vs after", "concept overview" + "key tools list")
-- 3+ images: only if post has clearly separable sections, each with its own data
+Design clean infographic SLIDES that illustrate the post content.
+Think "premium LinkedIn carousel slide", NOT "cyberpunk neural network art".
 
 EACH IMAGE_PROMPT MUST INCLUDE:
-1. EXPLICIT TITLE TEXT at the top of the slide (use quotes in the prompt)
-2. 3-5 LABELED ELEMENTS (e.g., named cards / numbered items / bars in a chart) — NEVER MORE THAN 5
-3. CONCRETE LABELS for each element — short (2-5 words) — taken from the actual post content
+1. EXPLICIT TITLE TEXT at the top (use quotes in the prompt)
+2. 3-5 LABELED ELEMENTS (named cards / numbered items / bars) — NEVER more than 5
+3. CONCRETE LABELS (2-5 words) taken from actual post content
 4. ONE KEY METRIC OR NUMBER per element where applicable
-5. A visual structure: timeline / comparison / hierarchy / numbered grid / bar chart / etc.
+5. A visual structure: timeline / comparison / hierarchy / numbered grid / bar chart
 
-VISUAL STYLE (apply to every image_prompt):
-- Modern, clean, professional infographic
-- Dark navy background (#0a0e1a-ish), with bright accent colors: cyan, orange, white
-- LOTS of negative space — uncluttered, breathable
-- Crisp sans-serif typography (think Inter or SF Pro)
+VISUAL STYLE:
+- Dark navy background (#0a0e1a), bright accents: cyan, orange, white
+- Lots of negative space — uncluttered, breathable
+- Crisp sans-serif typography (Inter/SF Pro style)
 - Subtle icons next to labels (one tiny icon per item)
-- High contrast for readability on mobile feed
 - 16:9 horizontal layout for LinkedIn feed
-- NO photorealistic elements, NO 3D renders, NO "cyberpunk glow", NO abstract neural-network mesh
-- The image should look like it was made in Figma by a senior designer, not generated by AI
+- NO photorealistic, NO 3D renders, NO cyberpunk glow, NO abstract neural-network mesh
+- Looks like it was made in Figma by a senior designer
 
-ANTI-PATTERNS to AVOID:
-- Cluttered slides with 8+ items (split into 2 cleaner slides instead)
-- Long sentences in the slide (max 5 words per label)
-- Generic stock-image vibes
-- Heavy gradients, glow effects, lens flares
-- Decorative abstract art that doesn't carry information
+ANTI-PATTERNS:
+- 8+ items on one slide → split into 2 cleaner slides
+- Long sentences (max 5 words per label)
+- Decorative art that doesn't carry information
 
-═══════════════════════════════════════════════════════════════════════════
-EXAMPLE OF A GOOD IMAGE_PROMPT
-═══════════════════════════════════════════════════════════════════════════
-"A clean modern infographic slide, 16:9 aspect ratio, dark navy background (#0a0e1a).
-Title at top, large white sans-serif typography: 'Top 4 LLM Inference Optimizations'.
-Subtitle below in muted gray: 'Production benchmarks, 2026'.
+NUMBER OF IMAGES ({min_imgs}-{max_imgs}):
+- 1: single dominant idea or one comparison
+- 2: two angles (problem + solution, before/after, overview + tools list)
+- 3+: only if post has clearly separable sections with own data
 
-Four horizontal cards arranged in a 2x2 grid, each card has rounded corners,
-subtle border, and contains:
-  - A small line-art icon in the top-left (different color per card)
-  - A short title (3-4 words) in white
-  - One key metric in bright color (cyan or orange)
-
+EXAMPLE IMAGE_PROMPT:
+"Clean modern infographic slide, 16:9, dark navy background (#0a0e1a).
+Title (large white sans-serif): 'Top 4 LLM Inference Optimizations'.
+Subtitle (muted gray): 'Production benchmarks, 2026'.
+Four horizontal cards in a 2x2 grid, rounded corners, subtle borders.
 Card 1 (cyan accent, chip icon): 'vLLM PagedAttention' / '24× throughput'
 Card 2 (orange accent, lightning icon): 'FlashAttention-3' / '75% GPU util'
 Card 3 (cyan accent, rocket icon): 'Speculative Decoding' / '2.5× faster'
 Card 4 (orange accent, compress icon): 'KV-cache 8-bit' / '4× memory'
-
-Lots of negative space between cards. Crisp typography.
-No background patterns, no glow, no clutter. Professional LinkedIn-ready slide."
+Lots of negative space. Crisp typography. No background patterns, no glow."
 
 ═══════════════════════════════════════════════════════════════════════════
-OUTPUT FORMAT — STRICT JSON, NO EXPLANATION
+OUTPUT FORMAT — STRICT JSON ONLY
 ═══════════════════════════════════════════════════════════════════════════
 {{
   "post": "...",
@@ -122,60 +138,128 @@ OUTPUT FORMAT — STRICT JSON, NO EXPLANATION
 """
 
 
-def _build_system_prompt() -> str:
+def _build_system_prompt(has_search: bool) -> str:
     max_imgs = max(1, min(4, settings.max_images_per_post))
-    min_imgs = 1
-    return SYSTEM_PROMPT_TEMPLATE.format(min_imgs=min_imgs, max_imgs=max_imgs)
+    search_instruction = (
+        "with Google Search (recent news, benchmarks, papers, GitHub repos, real-world numbers)"
+        if has_search else
+        "using your knowledge (no web search available for this fallback model)"
+    )
+    return SYSTEM_PROMPT_TEMPLATE.format(
+        min_imgs=1,
+        max_imgs=max_imgs,
+        search_instruction=search_instruction,
+    )
 
 
-# ── Генерация контента ────────────────────────────────────────────────────────
+# ── Определение «временно недоступна» ────────────────────────────────────────
+
+def _is_unavailable(exc: Exception) -> bool:
+    """True если это временная перегрузка/недоступность модели — можно пробовать следующую."""
+    msg = str(exc).lower()
+    return any(kw in msg for kw in (
+        "503", "unavailable", "overload", "high demand",
+        "try again later", "temporarily", "capacity",
+    ))
+
+
+# ── Генераторы для каждого провайдера ────────────────────────────────────────
+
+def _run_gemini(topic: str, model: ModelConfig) -> dict:
+    api_key = os.getenv("GOOGLE_API_KEY")
+    if not api_key:
+        raise RuntimeError("GOOGLE_API_KEY не задан в .env")
+
+    client = genai.Client(api_key=api_key)
+    config_kwargs: dict = {
+        "system_instruction": _build_system_prompt(has_search=True),
+        "temperature": 1.0,
+    }
+    if model.has_search:
+        config_kwargs["tools"] = [types.Tool(google_search=types.GoogleSearch())]
+
+    response = client.models.generate_content(
+        model=model.model_id,
+        contents=(
+            f"Topic for LinkedIn post: {topic}\n\n"
+            "Research with Google Search, find specific numbers, tools, papers. "
+            "Write the post AND design infographic slide prompts. Return JSON."
+        ),
+        config=types.GenerateContentConfig(**config_kwargs),
+    )
+    return _parse_response((response.text or "").strip())
+
+
+def _run_openai(topic: str, model: ModelConfig) -> dict:
+    api_key = settings.openai_api_key or os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY не задан в .env")
+
+    client = OpenAI(api_key=api_key, timeout=120.0)
+    system_prompt = _build_system_prompt(has_search=False)
+
+    response = client.chat.completions.create(
+        model=model.model_id,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user",   "content": (
+                f"Topic for LinkedIn post: {topic}\n\n"
+                "Write an excellent post with specific data points from your training knowledge, "
+                "and design infographic slide prompts for it. Return JSON."
+            )},
+        ],
+        response_format={"type": "json_object"},
+        temperature=1.0,
+    )
+    raw = (response.choices[0].message.content or "").strip()
+    return _parse_response(raw)
+
+
+_PROVIDER_FN: dict[Provider, Callable] = {
+    Provider.GEMINI: _run_gemini,
+    Provider.OPENAI: _run_openai,
+}
+
+
+# ── Главная публичная функция ─────────────────────────────────────────────────
 
 def generate_post_content(topic: str) -> dict:
     """
-    Исследует тему и генерирует пост + список инфографик-промптов.
-
-    Returns:
-        dict с ключами 'post' (str) и 'image_prompts' (list[str], длина 1..N)
+    Пробует модели из TEXT_MODEL_CHAIN по порядку.
+    Переключается на следующую только при ошибках недоступности (503 / overload).
+    Любые другие ошибки (4xx, неверный ключ, quota) — пробрасывает сразу.
     """
-    api_key = os.getenv("GOOGLE_API_KEY")
-    if not api_key:
-        raise RuntimeError("Не задан GOOGLE_API_KEY в .env")
+    last_exc: Exception | None = None
 
-    client = genai.Client(api_key=api_key)
+    for model in TEXT_MODEL_CHAIN:
+        log.info("Пробую %s / %s для темы: %r", model.provider.value, model.model_id, topic)
+        try:
+            result = _PROVIDER_FN[model.provider](topic, model)
+            log.info("Успех: %s / %s (%d символов поста, %d картинок)",
+                     model.provider.value, model.model_id,
+                     len(result["post"]), len(result.get("image_prompts", [])))
+            return result
 
-    log.info("Запускаю gemini-3.1-flash-lite для темы: %r (max_images=%d)",
-             topic, settings.max_images_per_post)
+        except Exception as exc:
+            if _is_unavailable(exc):
+                log.warning("Модель %s/%s недоступна (перегрузка), пробую следующую: %s",
+                            model.provider.value, model.model_id, exc)
+                last_exc = exc
+                continue
+            # Любая другая ошибка — пробрасываем немедленно
+            log.exception("Ошибка в %s/%s (не связана с доступностью)",
+                          model.provider.value, model.model_id)
+            raise
 
-    try:
-        response = client.models.generate_content(
-            model="gemini-3.1-flash-lite",
-            contents=(
-                f"Topic for LinkedIn post: {topic}\n\n"
-                "Research with Google Search, find specific numbers, tools, papers. "
-                "Then write the post AND design infographic slide prompts that visualize "
-                "its key data points (not decorative — they should carry real information). "
-                "Return JSON."
-            ),
-            config=types.GenerateContentConfig(
-                system_instruction=_build_system_prompt(),
-                tools=[types.Tool(google_search=types.GoogleSearch())],
-                temperature=1.0,
-            ),
-        )
-    except Exception:
-        log.exception("Ошибка при обращении к Gemini API")
-        raise
-
-    raw_text = (response.text or "").strip()
-    log.debug("Ответ Gemini (%d символов):\n%s", len(raw_text), raw_text[:500])
-
-    return _parse_response(raw_text)
+    raise RuntimeError(
+        f"Все модели недоступны. Последняя ошибка: {last_exc}"
+    ) from last_exc
 
 
 # ── Парсинг JSON ──────────────────────────────────────────────────────────────
 
 def _parse_response(raw: str) -> dict:
-    """Извлекает JSON из ответа Gemini (терпим к markdown-обёртке и тексту после JSON)."""
+    """Извлекает JSON из ответа (терпим к markdown-обёртке и тексту после JSON)."""
     if "```" in raw:
         inner_start = raw.find("```") + 3
         inner_end = raw.rfind("```")
@@ -187,15 +271,15 @@ def _parse_response(raw: str) -> dict:
 
     obj_start = raw.find("{")
     if obj_start == -1:
-        log.error("JSON-объект не найден в ответе Gemini. Полный ответ:\n%s", raw)
-        raise RuntimeError(f"Gemini не вернул JSON. Ответ начинается с: {raw[:200]!r}")
+        log.error("JSON-объект не найден в ответе. Полный ответ:\n%s", raw)
+        raise RuntimeError(f"Модель не вернула JSON. Ответ начинается с: {raw[:200]!r}")
 
     try:
         decoder = json.JSONDecoder()
         data, _ = decoder.raw_decode(raw, obj_start)
     except json.JSONDecodeError as exc:
         log.error(
-            "Не удалось распарсить JSON.\nПозиция: %s\nКонтекст: %r\nПолный ответ:\n%s",
+            "JSON parse error.\nПозиция: %s\nКонтекст: %r\nПолный ответ:\n%s",
             exc, raw[max(0, exc.pos - 40): exc.pos + 40], raw,
         )
         raise RuntimeError(
@@ -203,11 +287,10 @@ def _parse_response(raw: str) -> dict:
             f"Контекст: ...{raw[max(0, exc.pos - 40):exc.pos + 40]}..."
         ) from exc
 
-    # ── Валидация полей и нормализация ──────────────────────────────────────
     if "post" not in data:
-        raise RuntimeError(f"Gemini вернул JSON без поля 'post'. Получено: {list(data.keys())}")
+        raise RuntimeError(f"JSON без поля 'post'. Получено: {list(data.keys())}")
 
-    # Совместимость со старым форматом: image_prompt → image_prompts
+    # Нормализуем image_prompts
     if "image_prompts" not in data:
         if "image_prompt" in data and data["image_prompt"]:
             data["image_prompts"] = [data["image_prompt"]]
@@ -219,7 +302,6 @@ def _parse_response(raw: str) -> dict:
     if not isinstance(prompts, list):
         raise RuntimeError(f"image_prompts должен быть list, получили: {type(prompts).__name__}")
 
-    # Отфильтруем пустые и обрежем до максимума
     prompts = [p.strip() for p in prompts if isinstance(p, str) and p.strip()]
     max_imgs = max(1, min(4, settings.max_images_per_post))
     if len(prompts) > max_imgs:
@@ -227,10 +309,7 @@ def _parse_response(raw: str) -> dict:
         prompts = prompts[:max_imgs]
     data["image_prompts"] = prompts
 
-    log.info(
-        "Пост сгенерирован (%d символов), картинок к нему: %d",
-        len(data["post"]), len(prompts),
-    )
+    log.info("Пост готов (%d символов, %d image_prompts)", len(data["post"]), len(prompts))
     for i, p in enumerate(prompts, 1):
         log.debug("Image prompt #%d: %s…", i, p[:120].replace("\n", " "))
 

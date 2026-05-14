@@ -1,20 +1,27 @@
 """
-images.py — генерация инфографик-картинок через OpenAI gpt-image-1.
+images.py — генерация инфографик с fallback-цепочкой по провайдерам.
 
-Почему gpt-image-1:
-  - Корректно рисует ТЕКСТ внутри картинки (Gemini/DALL-E косячат с буквами)
-  - Это критично для инфографик-стиля: заголовки, лейблы, цифры, код
+Fallback-цепочка (картинки):
+  1. gpt-image-2               (OpenAI, новый)
+  2. gpt-image-1               (OpenAI, проверенный)
+  3. nano-banana-pro-preview   (Google/Gemini, через generate_content + IMAGE modality)
+  4. gemini-3.1-flash-image-preview (Google/Gemini, ещё один image-fallback)
 
-Поддерживает параллельную генерацию N картинок (asyncio.gather).
+Переключается только при 503 / UNAVAILABLE / недоступности модели.
+Параллельная генерация N картинок через asyncio.gather.
 """
 
 import asyncio
 import base64
 import os
 import time
+from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 
 from openai import OpenAI
+from google import genai
+from google.genai import types
 
 from backend.config import settings
 from backend.logger import get_logger
@@ -27,66 +34,161 @@ log = get_logger(__name__)
 
 OUTPUT_DIR = BACKEND_DIR / "generated_images"
 
-IMAGE_MODEL = "gpt-image-1"
-
-# Маппинг aspect_ratio (то что приходит из API) → размер для gpt-image-1.
-# gpt-image-1 поддерживает только три размера, поэтому маппим к ближайшему.
-_SIZE_MAP = {
-    "16:9": "1536x1024",   # landscape (3:2 на самом деле — ближайшее)
+# Маппинг aspect_ratio → размер для OpenAI image API (только три поддерживаемых)
+_OPENAI_SIZE_MAP = {
+    "16:9": "1536x1024",
     "4:3":  "1536x1024",
     "1:1":  "1024x1024",
-    "9:16": "1024x1536",   # portrait
+    "9:16": "1024x1536",
     "3:4":  "1024x1536",
 }
 
 
-# ── Главные публичные функции ────────────────────────────────────────────────
+# ── Цепочка image-моделей ────────────────────────────────────────────────────
+
+class ImageProvider(str, Enum):
+    OPENAI = "openai"
+    GEMINI = "gemini"
+
+
+@dataclass
+class ImageModelConfig:
+    provider: ImageProvider
+    model_id: str
+
+
+IMAGE_MODEL_CHAIN: list[ImageModelConfig] = [
+    ImageModelConfig(ImageProvider.OPENAI, "gpt-image-2"),
+    ImageModelConfig(ImageProvider.OPENAI, "gpt-image-1"),
+    ImageModelConfig(ImageProvider.GEMINI, "nano-banana-pro-preview"),
+    ImageModelConfig(ImageProvider.GEMINI, "gemini-3.1-flash-image-preview"),
+]
+
+
+# ── Определение временной недоступности ──────────────────────────────────────
+
+def _is_unavailable(exc: Exception) -> bool:
+    msg = str(exc).lower()
+    return any(kw in msg for kw in (
+        "503", "unavailable", "overload", "high demand",
+        "try again later", "temporarily", "capacity",
+        "not found", "404",   # модель ещё не выкатили — переходим к следующей
+    ))
+
+
+# ── OpenAI image генератор ───────────────────────────────────────────────────
+
+def _openai_generate(prompt: str, model_id: str, aspect_ratio: str) -> bytes:
+    api_key = settings.openai_api_key or os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY не задан в .env")
+
+    size = _OPENAI_SIZE_MAP.get(aspect_ratio, "1536x1024")
+    quality = settings.image_quality
+
+    client = OpenAI(api_key=api_key, timeout=180.0)
+    response = client.images.generate(
+        model=model_id,
+        prompt=prompt,
+        size=size,
+        quality=quality,
+        n=1,
+    )
+    if not response.data or not response.data[0].b64_json:
+        raise RuntimeError(f"OpenAI ({model_id}) не вернул b64_json")
+    return base64.b64decode(response.data[0].b64_json)
+
+
+# ── Gemini image генератор ───────────────────────────────────────────────────
+
+def _gemini_generate(prompt: str, model_id: str, aspect_ratio: str) -> bytes:
+    api_key = os.getenv("GOOGLE_API_KEY")
+    if not api_key:
+        raise RuntimeError("GOOGLE_API_KEY не задан в .env")
+
+    client = genai.Client(api_key=api_key)
+
+    # Gemini image models используют generate_content + response_modalities=["IMAGE"]
+    # aspect_ratio передаём в промпт (ImageConfig поддерживается не всеми версиями SDK)
+    _ASPECT_HINTS = {
+        "16:9": "Wide cinematic 16:9 landscape aspect ratio.",
+        "9:16": "Vertical 9:16 portrait aspect ratio.",
+        "1:1":  "Square 1:1 aspect ratio.",
+        "4:3":  "Standard 4:3 landscape aspect ratio.",
+        "3:4":  "Vertical 3:4 portrait aspect ratio.",
+    }
+    aspect_hint = _ASPECT_HINTS.get(aspect_ratio, "")
+    full_prompt = f"{prompt.rstrip('.')}. {aspect_hint}".strip() if aspect_hint else prompt
+
+    config_kwargs: dict = {"response_modalities": ["IMAGE"]}
+    try:
+        config_kwargs["image_config"] = types.ImageConfig(aspect_ratio=aspect_ratio)
+    except (AttributeError, TypeError):
+        pass  # старый SDK без ImageConfig — полагаемся на текст промпта
+
+    response = client.models.generate_content(
+        model=model_id,
+        contents=full_prompt,
+        config=types.GenerateContentConfig(**config_kwargs),
+    )
+
+    try:
+        for part in response.candidates[0].content.parts:
+            if part.inline_data is not None:
+                return part.inline_data.data
+    except (IndexError, AttributeError):
+        pass
+
+    raise RuntimeError(f"Gemini ({model_id}) не вернул картинку в ответе")
+
+
+_PROVIDER_FN = {
+    ImageProvider.OPENAI: _openai_generate,
+    ImageProvider.GEMINI: _gemini_generate,
+}
+
+
+# ── Генерация одной картинки с fallback ──────────────────────────────────────
 
 def generate_image(prompt: str, aspect_ratio: str = "16:9") -> str:
     """
-    Синхронно генерирует одну картинку и возвращает путь к PNG.
+    Синхронно генерирует одну картинку, проходя по IMAGE_MODEL_CHAIN.
+    Возвращает путь к PNG.
     Используется в asyncio.to_thread() из верхних слоёв.
     """
-    api_key = settings.openai_api_key or os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        raise RuntimeError("Не задан OPENAI_API_KEY в .env")
+    last_exc: Exception | None = None
 
-    size = _SIZE_MAP.get(aspect_ratio, "1536x1024")
-    quality = settings.image_quality
+    for model in IMAGE_MODEL_CHAIN:
+        log.info("Генерирую картинку | %s/%s | aspect=%s | prompt: %s…",
+                 model.provider.value, model.model_id, aspect_ratio,
+                 prompt[:80].replace("\n", " "))
+        try:
+            image_bytes = _PROVIDER_FN[model.provider](prompt, model.model_id, aspect_ratio)
+            path = str(_save_image(image_bytes))
+            log.info("Картинка готова: %s/%s → %s", model.provider.value, model.model_id, path)
+            return path
 
-    log.info(
-        "Генерирую картинку | model=%s | size=%s | quality=%s | prompt: %s…",
-        IMAGE_MODEL, size, quality, prompt[:100].replace("\n", " "),
-    )
+        except Exception as exc:
+            if _is_unavailable(exc):
+                log.warning("Image модель %s/%s недоступна, пробую следующую: %s",
+                            model.provider.value, model.model_id, exc)
+                last_exc = exc
+                continue
+            log.exception("Ошибка image %s/%s (не связана с доступностью)",
+                          model.provider.value, model.model_id)
+            raise
 
-    client = OpenAI(api_key=api_key, timeout=180.0)
-    try:
-        response = client.images.generate(
-            model=IMAGE_MODEL,
-            prompt=prompt,
-            size=size,
-            quality=quality,
-            n=1,
-        )
-    except Exception:
-        log.exception("Ошибка при обращении к OpenAI image API (model=%s)", IMAGE_MODEL)
-        raise
+    raise RuntimeError(
+        f"Все image-модели недоступны. Последняя ошибка: {last_exc}"
+    ) from last_exc
 
-    if not response.data or not response.data[0].b64_json:
-        log.error("OpenAI не вернул b64_json. Ответ: %s", response)
-        raise RuntimeError("OpenAI не вернул изображение в ответе")
 
-    image_bytes = base64.b64decode(response.data[0].b64_json)
-    return str(_save_image(image_bytes))
-
+# ── Параллельная генерация N картинок ────────────────────────────────────────
 
 async def generate_images(prompts: list[str], aspect_ratio: str = "16:9") -> list[str]:
     """
-    Асинхронно генерирует N картинок ПАРАЛЛЕЛЬНО.
-    Если одна из них упала — остальные продолжают; в результат попадают только успешные.
-
-    Returns:
-        list путей к PNG (порядок соответствует prompts, но битые — пропускаются)
+    Параллельно генерирует N картинок (каждая со своим fallback-chain).
+    Упавшие — пропускаются gracefully.
     """
     if not prompts:
         return []
@@ -100,21 +202,20 @@ async def generate_images(prompts: list[str], aspect_ratio: str = "16:9") -> lis
     paths: list[str] = []
     for i, res in enumerate(results):
         if isinstance(res, Exception):
-            log.warning("Картинка #%d упала: %s", i + 1, res)
+            log.warning("Картинка #%d упала (все модели исчерпаны): %s", i + 1, res)
         else:
             paths.append(res)
 
-    log.info("Готово: %d из %d картинок сгенерированы", len(paths), len(prompts))
+    log.info("Готово: %d из %d картинок", len(paths), len(prompts))
     return paths
 
 
 # ── Сохранение ───────────────────────────────────────────────────────────────
 
 def _save_image(image_bytes: bytes) -> Path:
-    """Пишет PNG в OUTPUT_DIR. Имя — timestamp + случайный суффикс (на случай гонки)."""
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     filename = f"post_{int(time.time() * 1000)}_{os.getpid()}.png"
     filepath = OUTPUT_DIR / filename
     filepath.write_bytes(image_bytes)
-    log.info("Картинка сохранена: %s (%d KB)", filepath, filepath.stat().st_size // 1024)
+    log.info("Сохранено: %s (%d KB)", filepath, filepath.stat().st_size // 1024)
     return filepath

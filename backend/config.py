@@ -54,7 +54,8 @@ class Settings(BaseSettings):
     public_base_url: str = ""
 
     # Биллинг
-    cost_per_post_cents: int = 100
+    cost_per_post_cents: int = 100   # полная генерация + публикация
+    regen_text_cents: int = 50       # перегенерация только текста
     initial_balance_cents: int = 300
     daily_notification_time: str = "18:00"
 
