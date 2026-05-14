@@ -94,7 +94,7 @@ async def save_linkedin_tokens(
 
 
 async def list_users_for_daily_notify(session: AsyncSession) -> Sequence[User]:
-    """Авторизованные юзеры с включёнными уведомлениями."""
+    """Авторизованные юзеры с включёнными уведомлениями (без фильтра по времени)."""
     stmt = (
         select(User)
         .where(User.daily_notifications.is_(True))
@@ -102,6 +102,33 @@ async def list_users_for_daily_notify(session: AsyncSession) -> Sequence[User]:
     )
     res = await session.execute(stmt)
     return res.scalars().all()
+
+
+async def list_users_for_notify_at(
+    session: AsyncSession,
+    *,
+    time_str: str,
+    weekday: int,
+) -> list[User]:
+    """
+    Возвращает авторизованных юзеров, которым нужно отправить уведомление
+    в указанное время и день недели.
+
+    Args:
+        time_str: "HH:MM" формат, локальное время сервера
+        weekday:  0=Monday, 6=Sunday (как datetime.weekday())
+    """
+    stmt = (
+        select(User)
+        .where(User.daily_notifications.is_(True))
+        .where(User.linkedin_access_token.is_not(None))
+        .where(User.notification_time == time_str)
+    )
+    res = await session.execute(stmt)
+    users = res.scalars().all()
+
+    # weekday фильтр в Python (хранится как JSON list)
+    return [u for u in users if weekday in u.notification_days]
 
 
 # ── Balance / Payments ───────────────────────────────────────────────────────

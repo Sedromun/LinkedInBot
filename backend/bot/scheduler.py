@@ -1,6 +1,15 @@
 """
-Шедулер ежедневных напоминаний.
+Шедулер уведомлений с per-user расписанием.
+
+Каждый юзер выбирает:
+  - notification_time: "HH:MM" (локальное время сервера)
+  - notification_days: список дней недели (0=Mon, 6=Sun)
+
+Раз в минуту (в начале каждой минуты) шедулер проверяет: кому из юзеров
+сейчас пора отправить напоминание, и шлёт им сообщения.
 """
+
+from datetime import datetime
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -17,44 +26,66 @@ log = get_logger(__name__)
 _scheduler: AsyncIOScheduler | None = None
 
 
-async def daily_job() -> None:
-    """Шлёт всем авторизованным юзерам с включёнными уведомлениями nudge-сообщение."""
-    log.info("Daily job started")
-    sent = 0
-    skipped = 0
+async def notification_tick() -> None:
+    """
+    Запускается каждую минуту в :00 секунд.
+    Находит юзеров с notification_time == current_time и нужным weekday,
+    и шлёт им nudge.
+    """
+    now = datetime.now()
+    current_time_str = now.strftime("%H:%M")
+    current_weekday = now.weekday()  # 0=Mon, 6=Sun
 
     async with session_scope() as session:
-        users = await crud.list_users_for_daily_notify(session)
+        users = await crud.list_users_for_notify_at(
+            session,
+            time_str=current_time_str,
+            weekday=current_weekday,
+        )
+
+    if not users:
+        return
+
+    log.info("Notification tick | time=%s weekday=%d → %d users",
+             current_time_str, current_weekday, len(users))
 
     cost_cents = settings.cost_per_post_cents
+    sent = 0
+    skipped_no_funds = 0
 
     for user in users:
         if user.balance_cents < cost_cents:
-            skipped += 1
+            skipped_no_funds += 1
             continue
-        topics_str = ", ".join(label(s) for s in user.interests[:3]) or "(нет интересов)"
+
+        topics_str = ", ".join(label(s) for s in user.interests[:3]) or "(no topics set)"
         posts = user.balance_cents // cost_cents if cost_cents else 0
         try:
             await send_daily_nudge(user.telegram_id, topics_str, user.balance_cents, posts)
             sent += 1
         except Exception:
-            log.exception("Daily nudge failed for tg=%s", user.telegram_id)
+            log.exception("Nudge failed for tg=%s", user.telegram_id)
 
-    log.info("Daily job done | sent=%d skipped=%d total=%d", sent, skipped, len(users))
+    log.info("Notifications | sent=%d skipped_no_funds=%d", sent, skipped_no_funds)
 
 
 def start_scheduler() -> AsyncIOScheduler:
+    """Запускает per-minute проверку уведомлений."""
     global _scheduler
     if _scheduler is not None:
         return _scheduler
 
     sched = AsyncIOScheduler()
-    t = settings.daily_time
-    trigger = CronTrigger(hour=t.hour, minute=t.minute)
-    sched.add_job(daily_job, trigger, id="daily_nudge", replace_existing=True)
+    # Раз в минуту, в :00 секунд (CronTrigger с указанной секундой)
+    sched.add_job(
+        notification_tick,
+        CronTrigger(second=0),
+        id="notification_tick",
+        replace_existing=True,
+    )
     sched.start()
     _scheduler = sched
-    log.info("Scheduler started | daily nudge at %s", settings.daily_notification_time)
+    log.info("Scheduler started | проверка уведомлений каждую минуту (per-user time)")
     return sched
 
 

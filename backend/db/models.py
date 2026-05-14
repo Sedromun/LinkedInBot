@@ -64,8 +64,15 @@ class User(Base):
     oauth_state: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
 
     # Профиль
-    interests_json: Mapped[str] = mapped_column(Text, default="[]", nullable=False)  # JSON list[str]
+    interests_json: Mapped[str] = mapped_column(Text, default="[]", nullable=False)
     daily_notifications: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+    # Время напоминания "HH:MM" в локальном времени сервера
+    notification_time: Mapped[str] = mapped_column(String(5), default="18:00", nullable=False)
+    # JSON list[int] — дни недели: 0=Mon, 6=Sun. По умолчанию каждый день.
+    notification_days_json: Mapped[str] = mapped_column(
+        Text, default="[0,1,2,3,4,5,6]", nullable=False
+    )
 
     # Баланс в центах ($1.00 = 100)
     balance_cents: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
@@ -91,6 +98,22 @@ class User(Base):
     @interests.setter
     def interests(self, value: list[str]) -> None:
         self.interests_json = json.dumps(value)
+
+    # ── Notification days ──────────────────────────────────────────────────
+
+    @property
+    def notification_days(self) -> list[int]:
+        """Список дней недели для уведомлений (0=Mon, 6=Sun)."""
+        try:
+            data = json.loads(self.notification_days_json or "[]")
+            return [d for d in data if isinstance(d, int) and 0 <= d <= 6]
+        except json.JSONDecodeError:
+            return []
+
+    @notification_days.setter
+    def notification_days(self, value: list[int]) -> None:
+        cleaned = sorted({int(d) for d in value if 0 <= int(d) <= 6})
+        self.notification_days_json = json.dumps(cleaned)
 
     # ── Проверка авторизации ────────────────────────────────────────────────
 

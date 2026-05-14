@@ -166,7 +166,7 @@ Or regenerate the text for ${regen:.2f}.
 GENERATING_IMAGES = """\
 🎨 <b>Text approved! Drawing infographics…</b>
 
-Generating {count} image{suffix} — ~30–60 sec.
+Generating {count} {noun} — ~30–60 sec.
 """
 
 FINAL_PREVIEW_HEADER = """\
@@ -229,10 +229,44 @@ Here's a topic from your interests: <i>{topics}</i>
 SETTINGS_INFO = """\
 ⚙️ <b>Settings</b>
 
-Daily reminders: <b>{daily}</b>
-Your topics: {interests}
+Reminders: <b>{daily}</b>
+Time: <b>{time}</b>
+Days: <b>{days}</b>
+Topics: {interests}
 
-/interests — change topics
-/notifications — toggle daily reminders
-/balance — balance
+<i>All times are in server local time.</i>
 """
+
+# ── Notification time / days pickers ─────────────────────────────────────────
+
+PICK_HOUR = """\
+⏰ <b>Pick the hour</b>
+
+Current: <b>{current}</b>
+"""
+
+PICK_MINUTE = """\
+⏰ <b>Pick the minutes</b>
+
+Hour selected: <b>{hour:02d}:??</b>
+"""
+
+TIME_SAVED = """\
+✅ Notification time saved: <b>{time}</b>
+
+I'll ping you at this time on your selected days.
+"""
+
+PICK_DAYS = """\
+📅 <b>Pick the days</b>
+
+Toggle the days you want reminders on, then hit Save.
+Currently: <b>{current}</b>
+"""
+
+DAYS_SAVED = """\
+✅ Notification days saved: <b>{days}</b>
+"""
+
+DAYS_EMPTY = "⚠️ Please select at least one day."
+

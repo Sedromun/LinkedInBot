@@ -98,13 +98,13 @@ async def cmd_start(message: Message) -> None:
 
     if authorized:
         text = messages.WELCOME_AUTHORIZED.format(
-            name=tg_user.first_name or "друг",
+            name=tg_user.first_name or "there",
             balance=balance_usd,
             posts=posts,
         )
     else:
         text = messages.WELCOME_NEW.format(
-            name=tg_user.first_name or "друг",
+            name=tg_user.first_name or "there",
             balance=balance_usd,
             cost=cost_cents / 100,
             posts=posts,
@@ -429,9 +429,9 @@ async def cb_approve_text(callback: CallbackQuery, state: FSMContext) -> None:
         await _show_final_preview(callback.message, callback.from_user.id, state)
         return
 
-    suffix = "у" if count == 1 else ("и" if count in (2, 3, 4) else "")
+    noun = "image" if count == 1 else "images"
     await callback.message.answer(
-        messages.GENERATING_IMAGES.format(count=count, suffix=suffix),
+        messages.GENERATING_IMAGES.format(count=count, noun=noun),
         parse_mode="HTML",
     )
 
@@ -583,10 +583,14 @@ async def show_settings(event: Message | CallbackQuery) -> None:
         if not user:
             return
         daily = user.daily_notifications
-        ints = ", ".join(label(s) for s in user.interests) or "не выбраны"
+        ints  = ", ".join(label(s) for s in user.interests) or "not set"
+        time_ = user.notification_time
+        days_ = keyboards.format_days(user.notification_days)
 
     text = messages.SETTINGS_INFO.format(
-        daily="✅ включены" if daily else "❌ выключены",
+        daily="✅ enabled" if daily else "❌ disabled",
+        time=time_,
+        days=days_,
         interests=ints,
     )
     if isinstance(event, CallbackQuery):
@@ -614,6 +618,153 @@ async def toggle_daily(event: Message | CallbackQuery) -> None:
         await event.answer(text)
 
 
+# ── Notification time picker ──────────────────────────────────────────────────
+
+@router.callback_query(F.data == "nt_change_time")
+async def cb_nt_change_time(callback: CallbackQuery) -> None:
+    """Шаг 1: показать сетку часов."""
+    async with session_scope() as session:
+        user = await crud.get_user_by_tg(session, callback.from_user.id)
+        current = user.notification_time if user else "18:00"
+
+    await callback.answer()
+    await callback.message.answer(
+        messages.PICK_HOUR.format(current=current),
+        parse_mode="HTML",
+        reply_markup=keyboards.hour_picker_keyboard(),
+    )
+
+
+@router.callback_query(F.data.startswith("nt_hour:"))
+async def cb_nt_hour(callback: CallbackQuery) -> None:
+    """Шаг 2: юзер выбрал час → показываем минуты."""
+    hour = int(callback.data.split(":", 1)[1])
+    await callback.answer()
+    await callback.message.answer(
+        messages.PICK_MINUTE.format(hour=hour),
+        parse_mode="HTML",
+        reply_markup=keyboards.minute_picker_keyboard(hour),
+    )
+
+
+@router.callback_query(F.data.startswith("nt_set:"))
+async def cb_nt_set(callback: CallbackQuery) -> None:
+    """Шаг 3: юзер выбрал минуты → сохраняем в БД."""
+    _, hour_str, minute_str = callback.data.split(":")
+    hour, minute = int(hour_str), int(minute_str)
+    if not (0 <= hour < 24 and 0 <= minute < 60):
+        await callback.answer("Bad time", show_alert=True)
+        return
+
+    time_str = f"{hour:02d}:{minute:02d}"
+    async with session_scope() as session:
+        user = await crud.get_user_by_tg(session, callback.from_user.id)
+        if not user:
+            await callback.answer("Send /start first", show_alert=True)
+            return
+        user.notification_time = time_str
+
+    log.info("User %s set notification_time=%s", callback.from_user.id, time_str)
+    await callback.answer()
+    await callback.message.answer(
+        messages.TIME_SAVED.format(time=time_str), parse_mode="HTML"
+    )
+
+
+# ── Notification days picker ──────────────────────────────────────────────────
+
+@router.callback_query(F.data == "nt_change_days")
+async def cb_nt_change_days(callback: CallbackQuery, state: FSMContext) -> None:
+    """Показываем чекбокс-клавиатуру дней. Текущий набор — из БД."""
+    async with session_scope() as session:
+        user = await crud.get_user_by_tg(session, callback.from_user.id)
+        if not user:
+            await callback.answer("Send /start first", show_alert=True)
+            return
+        current_days = list(user.notification_days)
+
+    # Храним выбранные дни в FSM, чтобы не дёргать БД на каждый toggle
+    await state.update_data(picking_days=current_days)
+    await callback.answer()
+    await callback.message.answer(
+        messages.PICK_DAYS.format(current=keyboards.format_days(current_days)),
+        parse_mode="HTML",
+        reply_markup=keyboards.days_picker_keyboard(current_days),
+    )
+
+
+@router.callback_query(F.data.startswith("nd_toggle:"))
+async def cb_nd_toggle(callback: CallbackQuery, state: FSMContext) -> None:
+    """Тогл одного дня (Mon/Tue/.../Sun) в FSM-буфере."""
+    day = int(callback.data.split(":", 1)[1])
+    data = await state.get_data()
+    days = list(data.get("picking_days", []))
+    if day in days:
+        days.remove(day)
+    else:
+        days.append(day)
+    days = sorted(set(days))
+    await state.update_data(picking_days=days)
+    await callback.answer()
+    try:
+        await callback.message.edit_reply_markup(
+            reply_markup=keyboards.days_picker_keyboard(days)
+        )
+    except Exception:
+        pass
+
+
+@router.callback_query(F.data.startswith("nd_preset:"))
+async def cb_nd_preset(callback: CallbackQuery, state: FSMContext) -> None:
+    """Пресеты: every day / weekdays / weekends."""
+    preset = callback.data.split(":", 1)[1]
+    if preset == "all":
+        days = [0, 1, 2, 3, 4, 5, 6]
+    elif preset == "weekdays":
+        days = [0, 1, 2, 3, 4]
+    elif preset == "weekends":
+        days = [5, 6]
+    else:
+        await callback.answer("Unknown preset", show_alert=True)
+        return
+
+    await state.update_data(picking_days=days)
+    await callback.answer()
+    try:
+        await callback.message.edit_reply_markup(
+            reply_markup=keyboards.days_picker_keyboard(days)
+        )
+    except Exception:
+        pass
+
+
+@router.callback_query(F.data == "nd_done")
+async def cb_nd_done(callback: CallbackQuery, state: FSMContext) -> None:
+    """Сохранить выбранные дни в БД."""
+    data = await state.get_data()
+    days = sorted(set(data.get("picking_days", [])))
+
+    if not days:
+        await callback.answer(messages.DAYS_EMPTY, show_alert=True)
+        return
+
+    async with session_scope() as session:
+        user = await crud.get_user_by_tg(session, callback.from_user.id)
+        if not user:
+            await callback.answer("Send /start first", show_alert=True)
+            return
+        user.notification_days = days
+
+    await state.update_data(picking_days=None)
+    log.info("User %s set notification_days=%s", callback.from_user.id, days)
+
+    pretty = keyboards.format_days(days)
+    await callback.answer()
+    await callback.message.answer(
+        messages.DAYS_SAVED.format(days=pretty), parse_mode="HTML"
+    )
+
+
 @router.callback_query(F.data == "back_main")
 async def cb_back_main(callback: CallbackQuery) -> None:
     await callback.answer()
@@ -628,13 +779,13 @@ async def cb_back_main(callback: CallbackQuery) -> None:
 
     if authorized:
         text = messages.WELCOME_AUTHORIZED.format(
-            name=callback.from_user.first_name or "друг",
+            name=callback.from_user.first_name or "there",
             balance=balance_cents / 100,
             posts=posts,
         )
     else:
         text = messages.WELCOME_NEW.format(
-            name=callback.from_user.first_name or "друг",
+            name=callback.from_user.first_name or "there",
             balance=balance_cents / 100,
             cost=cost_cents / 100,
             posts=posts,

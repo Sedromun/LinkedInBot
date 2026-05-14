@@ -6,18 +6,11 @@ config.py — централизованные настройки из .env че
     settings.telegram_bot_token
 """
 
-from datetime import time
 from pathlib import Path
 
-from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from backend.paths import REPO_ROOT
-
-
-def _parse_time(s: str) -> time:
-    hh, mm = s.split(":")
-    return time(hour=int(hh), minute=int(mm))
 
 
 class Settings(BaseSettings):
@@ -57,7 +50,6 @@ class Settings(BaseSettings):
     cost_per_post_cents: int = 100   # полная генерация + публикация
     regen_text_cents: int = 50       # перегенерация только текста
     initial_balance_cents: int = 300
-    daily_notification_time: str = "18:00"
 
     # БД
     database_url: str = f"sqlite+aiosqlite:///{REPO_ROOT}/backend/data/app.db"
@@ -66,10 +58,6 @@ class Settings(BaseSettings):
     def oauth_redirect_uri(self) -> str:
         base = self.public_base_url.rstrip("/")
         return f"{base}/oauth/callback"
-
-    @property
-    def daily_time(self) -> time:
-        return _parse_time(self.daily_notification_time)
 
 
 settings = Settings()

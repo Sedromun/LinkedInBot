@@ -49,9 +49,9 @@ TEXT_MODEL_CHAIN: list[ModelConfig] = [
     ModelConfig(Provider.GEMINI, "gemini-3.1-flash-lite",  has_search=True),
     ModelConfig(Provider.GEMINI, "gemini-3.1-pro-preview", has_search=True),
     ModelConfig(Provider.GEMINI, "gemini-3-pro-preview",   has_search=True),
-    ModelConfig(Provider.OPENAI, "gpt-4.5-mini"),
-    ModelConfig(Provider.OPENAI, "gpt-5.4"),
-    ModelConfig(Provider.OPENAI, "gpt-5.5"),
+    ModelConfig(Provider.OPENAI, "gpt-4.5-mini",           has_search=True),
+    ModelConfig(Provider.OPENAI, "gpt-5.4",                has_search=True),
+    ModelConfig(Provider.OPENAI, "gpt-5.5",                has_search=True),
 ]
 
 
@@ -138,17 +138,12 @@ OUTPUT FORMAT — STRICT JSON ONLY
 """
 
 
-def _build_system_prompt(has_search: bool) -> str:
+def _build_system_prompt() -> str:
     max_imgs = max(1, min(4, settings.max_images_per_post))
-    search_instruction = (
-        "with Google Search (recent news, benchmarks, papers, GitHub repos, real-world numbers)"
-        if has_search else
-        "using your knowledge (no web search available for this fallback model)"
-    )
     return SYSTEM_PROMPT_TEMPLATE.format(
         min_imgs=1,
         max_imgs=max_imgs,
-        search_instruction=search_instruction,
+        search_instruction="with web search (recent news, benchmarks, papers, GitHub repos, real-world numbers)",
     )
 
 
@@ -165,53 +160,52 @@ def _is_unavailable(exc: Exception) -> bool:
 
 # ── Генераторы для каждого провайдера ────────────────────────────────────────
 
+_USER_MSG = (
+    "Topic for LinkedIn post: {topic}\n\n"
+    "Use web search to research this topic thoroughly — find recent news, benchmarks, "
+    "papers, GitHub repos, specific numbers and real-world results. "
+    "Then write the LinkedIn post AND design infographic slide prompts. Return JSON."
+)
+
+
 def _run_gemini(topic: str, model: ModelConfig) -> dict:
     api_key = os.getenv("GOOGLE_API_KEY")
     if not api_key:
         raise RuntimeError("GOOGLE_API_KEY не задан в .env")
 
     client = genai.Client(api_key=api_key)
-    config_kwargs: dict = {
-        "system_instruction": _build_system_prompt(has_search=True),
-        "temperature": 1.0,
-    }
-    if model.has_search:
-        config_kwargs["tools"] = [types.Tool(google_search=types.GoogleSearch())]
-
     response = client.models.generate_content(
         model=model.model_id,
-        contents=(
-            f"Topic for LinkedIn post: {topic}\n\n"
-            "Research with Google Search, find specific numbers, tools, papers. "
-            "Write the post AND design infographic slide prompts. Return JSON."
+        contents=_USER_MSG.format(topic=topic),
+        config=types.GenerateContentConfig(
+            system_instruction=_build_system_prompt(),
+            tools=[types.Tool(google_search=types.GoogleSearch())],
+            temperature=1.0,
         ),
-        config=types.GenerateContentConfig(**config_kwargs),
     )
     return _parse_response((response.text or "").strip())
 
 
 def _run_openai(topic: str, model: ModelConfig) -> dict:
+    """
+    Использует OpenAI Responses API с инструментом web_search_preview.
+    Это даёт модели доступ к актуальным данным из интернета (через Bing),
+    аналогично тому как Gemini использует Google Search.
+    """
     api_key = settings.openai_api_key or os.getenv("OPENAI_API_KEY")
     if not api_key:
         raise RuntimeError("OPENAI_API_KEY не задан в .env")
 
-    client = OpenAI(api_key=api_key, timeout=120.0)
-    system_prompt = _build_system_prompt(has_search=False)
+    client = OpenAI(api_key=api_key, timeout=180.0)
 
-    response = client.chat.completions.create(
+    response = client.responses.create(
         model=model.model_id,
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user",   "content": (
-                f"Topic for LinkedIn post: {topic}\n\n"
-                "Write an excellent post with specific data points from your training knowledge, "
-                "and design infographic slide prompts for it. Return JSON."
-            )},
-        ],
-        response_format={"type": "json_object"},
+        instructions=_build_system_prompt(),
+        input=_USER_MSG.format(topic=topic),
+        tools=[{"type": "web_search_preview"}],
         temperature=1.0,
     )
-    raw = (response.choices[0].message.content or "").strip()
+    raw = (response.output_text or "").strip()
     return _parse_response(raw)
 
 
