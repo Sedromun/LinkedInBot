@@ -14,7 +14,6 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 
-from backend.db.session import init_db
 from backend.logger import get_logger
 from backend.paths import REPO_ROOT
 from backend.proxy import configure_env_proxy
@@ -39,11 +38,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-
-@app.on_event("startup")
-async def _on_startup() -> None:
-    await init_db()
 
 
 # ── Healthcheck ──────────────────────────────────────────────────────────────

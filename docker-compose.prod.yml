@@ -7,6 +7,7 @@
 #    PUBLIC_BASE_URL=http://your-server-ip:8000  (или https://domain)
 #    LINKEDIN_CLIENT_ID, LINKEDIN_CLIENT_SECRET
 #    GOOGLE_API_KEY
+#    OPENAI_API_KEY
 #    TELEGRAM_BOT_TOKEN
 #    POSTGRES_PASSWORD=<сильный пароль>
 # ─────────────────────────────────────────────
@@ -28,6 +29,22 @@ services:
       retries: 5
     restart: unless-stopped
 
+  migrations:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: linkedin-bot:prod
+    container_name: linkedin-bot-migrations
+    command: alembic upgrade head
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: "postgresql+asyncpg://bot:${POSTGRES_PASSWORD}@db:5432/linkedin_bot"
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+
   api:
     build:
       context: .
@@ -47,6 +64,8 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      migrations:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
       interval: 30s
@@ -72,6 +91,8 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      migrations:
+        condition: service_completed_successfully
       api:
         condition: service_healthy
     restart: unless-stopped

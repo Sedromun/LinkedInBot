@@ -367,7 +367,7 @@ FastAPI слушает порт 8000.
 
 ## Схема базы данных
 
-Файл: `backend/db/models.py`. Создаётся автоматически при старте `api` через `Base.metadata.create_all()`.
+Файл: `backend/db/models.py`. Схема управляется через **Alembic** — см. секцию [Миграции](#миграции-бд).
 
 ### `users`
 
@@ -413,6 +413,80 @@ FastAPI слушает порт 8000.
 | `status` | enum | pending / completed / failed |
 | `note` | string | произвольное описание |
 | `created_at` | datetime | |
+
+---
+
+## Миграции БД
+
+Схема управляется через [Alembic](https://alembic.sqlalchemy.org). Файлы:
+
+```
+alembic/
+├── env.py                       # настройка (читает DATABASE_URL из настроек)
+├── script.py.mako               # шаблон новой миграции
+└── versions/
+    └── 0001_initial.py          # текущие версии
+alembic.ini                      # конфиг
+```
+
+### В docker-compose
+
+Оба compose-файла включают сервис `migrations`, который запускает `alembic upgrade head` **до** старта `api`/`bot`:
+
+```yaml
+api:
+  depends_on:
+    migrations:
+      condition: service_completed_successfully
+```
+
+Так что `docker compose up` → миграции накатываются автоматически.
+
+### Вручную (без docker)
+
+```bash
+alembic upgrade head           # накатить все миграции
+alembic current                # посмотреть текущую версию
+alembic history                # вся история
+alembic downgrade -1           # откатить на одну назад
+```
+
+### Добавить новую миграцию
+
+После изменения моделей в `backend/db/models.py`:
+
+```bash
+# 1. Сгенерировать миграцию автоматически по diff'у моделей и БД
+alembic revision --autogenerate -m "add user timezone" --rev-id 0002
+
+# 2. Проверить и поправить файл alembic/versions/0002_add_user_timezone.py
+
+# 3. Применить
+alembic upgrade head
+```
+
+> **Важно:** `--autogenerate` не ловит все изменения (rename колонок, custom CHECK constraints и т.п.). Всегда читай сгенерированный файл перед коммитом.
+
+### Если уже есть БД от старой версии без alembic_version
+
+```bash
+# Помечаем существующую БД как соответствующую миграции 0001 (не выполняя её)
+alembic stamp 0001
+# Дальше любые новые миграции накатятся нормально
+alembic upgrade head
+```
+
+### Сброс БД с нуля
+
+```bash
+# DEV (SQLite)
+rm backend/data/app.db
+docker compose -f docker-compose.dev.yml up   # migrations создадут схему
+
+# PROD (Postgres)
+docker compose -f docker-compose.prod.yml down -v   # -v удаляет volume
+docker compose -f docker-compose.prod.yml up -d
+```
 
 ---
 
@@ -640,7 +714,6 @@ URL в LinkedIn App и `PUBLIC_BASE_URL` в `.env` должны совпадат
 
 - [ ] **Реальные платежи** — сейчас только mock. Прикрути Stripe webhook (см. [Биллинг](#биллинг)).
 - [ ] **Refresh-токены LinkedIn** — access_token живёт 60 дней, refresh не используется. Через 60 дней юзер должен сам перепривязать через `/start`.
-- [ ] **Миграции БД** — сейчас `Base.metadata.create_all()`. Для продакшен-эволюции схемы прикрути Alembic.
 - [ ] **Auth на `/api/admin/stats`** — открытый эндпоинт.
 - [ ] **OAuth callback нотификация в TG** работает только в одном процессе. Для split-deploy нужен Redis pub/sub или объединить bot+api в один процесс.
 - [ ] **LinkedIn endpoints устарели** — `/v2/ugcPosts` + `/v2/assets` ещё работают, но supported path: `/rest/posts` + `/rest/images?action=initializeUpload`.

@@ -22,7 +22,6 @@ from backend.bot import handlers
 from backend.bot.deps import set_bot
 from backend.bot.scheduler import start_scheduler, stop_scheduler
 from backend.config import settings
-from backend.db.session import init_db
 from backend.logger import get_logger
 
 log = get_logger(__name__)
@@ -32,7 +31,8 @@ async def main() -> None:
     if not settings.telegram_bot_token:
         raise RuntimeError("TELEGRAM_BOT_TOKEN не задан в .env")
 
-    await init_db()
+    # NB: схему БД накатывает Alembic (`alembic upgrade head`) до запуска бота —
+    # см. docker-compose. Локально без docker нужно запустить миграции вручную.
 
     proxy = settings.socks5_proxy.strip()
     telegram_session = AiohttpSession(proxy=proxy) if proxy else None

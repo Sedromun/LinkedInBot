@@ -4,6 +4,24 @@
 # ─────────────────────────────────────────────
 
 services:
+  migrations:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: linkedin-bot:dev
+    container_name: linkedin-bot-migrations-dev
+    command: alembic upgrade head
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: "sqlite+aiosqlite:////app/backend/data/app.db"
+    volumes:
+      - ./backend:/app/backend
+      - ./alembic:/app/alembic
+      - ./alembic.ini:/app/alembic.ini
+      - ./backend/data:/app/backend/data
+    restart: "no"   # отработала один раз — и хватит
+
   api:
     build:
       context: .
@@ -20,8 +38,13 @@ services:
       DATABASE_URL: "sqlite+aiosqlite:////app/backend/data/app.db"
     volumes:
       - ./backend:/app/backend                       # hot-reload кода
+      - ./alembic:/app/alembic
+      - ./alembic.ini:/app/alembic.ini
       - ./backend/data:/app/backend/data             # SQLite
       - ./backend/generated_images:/app/backend/generated_images
+    depends_on:
+      migrations:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
       interval: 30s
@@ -44,9 +67,13 @@ services:
       DATABASE_URL: "sqlite+aiosqlite:////app/backend/data/app.db"
     volumes:
       - ./backend:/app/backend                       # hot-reload кода
+      - ./alembic:/app/alembic
+      - ./alembic.ini:/app/alembic.ini
       - ./backend/data:/app/backend/data             # тот же SQLite-файл что у api
       - ./backend/generated_images:/app/backend/generated_images
     depends_on:
+      migrations:
+        condition: service_completed_successfully
       api:
         condition: service_healthy
     restart: unless-stopped

@@ -12,7 +12,6 @@ from sqlalchemy.ext.asyncio import (
 )
 
 from backend.config import settings
-from backend.db.models import Base
 from backend.logger import get_logger
 
 log = get_logger(__name__)
@@ -48,8 +47,6 @@ async def session_scope():
         await session.close()
 
 
-async def init_db() -> None:
-    """Создаёт таблицы (для разработки — без миграций)."""
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    log.info("База данных инициализирована: %s", settings.database_url)
+# NB: схема БД управляется через Alembic. Запуск миграций:
+#     alembic upgrade head
+# В docker-compose это делается до старта api/bot (см. compose-файлы).
