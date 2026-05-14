@@ -43,7 +43,7 @@ def upgrade() -> None:
         sa.Column("linkedin_token_expires_at", sa.DateTime(), nullable=True),
         sa.Column("oauth_state", sa.String(64), nullable=True),
         sa.Column("interests_json", sa.Text(), nullable=False, server_default="[]"),
-        sa.Column("daily_notifications", sa.Boolean(), nullable=False, server_default=sa.text("1")),
+        sa.Column("daily_notifications", sa.Boolean(), nullable=False, server_default=sa.text("true")),
         sa.Column("notification_time", sa.String(5), nullable=False, server_default="18:00"),
         sa.Column("notification_days_json", sa.Text(), nullable=False, server_default="[0,1,2,3,4,5,6]"),
         sa.Column("balance_cents", sa.Integer(), nullable=False, server_default="0"),

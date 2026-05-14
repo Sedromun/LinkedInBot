@@ -17,14 +17,17 @@
 7. [Команды бота](#команды-бота)
 8. [Пользовательский флоу](#пользовательский-флоу)
 9. [Биллинг](#биллинг)
-10. [API эндпоинты](#api-эндпоинты)
-11. [Схема базы данных](#схема-базы-данных)
-12. [Структура проекта и модули](#структура-проекта-и-модули)
-13. [Мониторинг и логи](#мониторинг-и-логи)
-14. [Расширение](#расширение)
-15. [Troubleshooting](#troubleshooting)
-16. [Security-чеклист для PROD](#security-чеклист-для-prod)
-17. [Известные ограничения / TODO](#известные-ограничения--todo)
+10. [Отказоустойчивость](#отказоустойчивость)
+11. [Уведомления и настройки](#уведомления-и-настройки)
+12. [API эндпоинты](#api-эндпоинты)
+13. [Схема базы данных](#схема-базы-данных)
+14. [Миграции БД](#миграции-бд)
+15. [Структура проекта и модули](#структура-проекта-и-модули)
+16. [Мониторинг и логи](#мониторинг-и-логи)
+17. [Расширение](#расширение)
+18. [Troubleshooting](#troubleshooting)
+19. [Security-чеклист для PROD](#security-чеклист-для-prod)
+20. [Известные ограничения / TODO](#известные-ограничения--todo)
 
 ---
 
@@ -34,24 +37,29 @@
 |---|---|
 | Telegram bot | [aiogram v3](https://docs.aiogram.dev) (async) |
 | Web / OAuth callback | [FastAPI](https://fastapi.tiangolo.com) + uvicorn |
-| LLM (текст + дизайн промптов картинок) | Gemini 3.1 Flash Lite + встроенный Google Search |
-| Картинки (инфографика) | **OpenAI `gpt-image-1`** — рисует чёткий текст внутри картинки |
+| LLM (текст + дизайн инфографик) | Gemini 3.1 Flash Lite (primary) → fallback на 5 моделей |
+| Картинки (инфографика) | **OpenAI `gpt-image-2`** → fallback на gpt-image-1 → nano-banana |
+| Web search | Google Search (Gemini) / Bing (OpenAI Responses API) |
 | LinkedIn API | `/v2/ugcPosts` + `/v2/assets` (OAuth 2.0, multi-image) |
 | Хранилище | SQLite (DEV) / Postgres 16 (PROD), SQLAlchemy 2.0 async |
-| Шедулер | APScheduler (`AsyncIOScheduler`) |
+| Миграции | Alembic |
+| Шедулер | APScheduler (`AsyncIOScheduler`) — per-user cron |
 | Контейнеризация | Docker + docker compose |
 | Конфиг | pydantic-settings |
 
-### Почему два разных LLM-провайдера
+### Почему так
 
-**Gemini** хорош в reasoning + у него есть встроенный Google Search → используем для написания поста и для дизайна промптов картинок.
+**Gemini** хорош в reasoning + встроенный Google Search → пишет пост на актуальных данных и **сам дизайнит** ТЗ на инфографик-слайды (заголовки, лейблы, цифры).
 
-**OpenAI gpt-image-1** — единственная на данный момент image-модель, которая корректно рисует **читаемый текст внутри картинки** (заголовки, цифры, лейблы карточек). Это критично потому что картинки в нашем боте — не декорация, а инфографики с реальной информацией.
+**OpenAI gpt-image-1/2** — единственные image-модели, которые корректно рисуют **читаемый текст внутри картинки** (заголовки слайдов, лейблы карточек, метрики). Это критично — наши картинки не декор, а слайды с информацией.
+
+**Fallback-цепочки**: если основная модель упала (503/overload), автоматически пробуется следующая. См. [Отказоустойчивость](#отказоустойчивость).
 
 Pipeline для одного поста:
 ```
-тема → Gemini ── текст поста ──┐
-              └─ image_prompts ─┴─ параллельно ─→ gpt-image-1 × N → инфографики
+тема → Gemini (с web search) ─┬─ текст поста
+                              └─ N image_prompts ─→ gpt-image-2 × N → инфографики
+                                                    (параллельно через asyncio.gather)
 ```
 
 ---
@@ -210,19 +218,21 @@ LinkedIn принимает HTTP-redirect только для тестовых �
 |---|---|---|---|
 | `MOCK_LINKEDIN` | `true` | `false` | Включает mock-режим |
 | `GOOGLE_API_KEY` | ✅ | ✅ | [aistudio.google.com](https://aistudio.google.com/app/apikey) — Gemini для текста |
-| `OPENAI_API_KEY` | ✅ | ✅ | [platform.openai.com](https://platform.openai.com/api-keys) — gpt-image-1 для картинок |
-| `IMAGE_QUALITY` | `medium` | `medium` | `low` ($0.011) / `medium` ($0.04) / `high` ($0.17) на картинку |
-| `MAX_IMAGES_PER_POST` | `2` | `2` | Сколько максимум картинок Gemini может попросить (1-4) |
+| `OPENAI_API_KEY` | ✅ | ✅ | [platform.openai.com](https://platform.openai.com/api-keys) — картинки + fallback для текста |
+| `IMAGE_QUALITY` | `medium` | `medium` | `low` ($0.011) / `medium` ($0.04) / `high` ($0.17) за картинку |
+| `MAX_IMAGES_PER_POST` | `2` | `2` | Верхняя граница картинок на пост (1-4) |
 | `TELEGRAM_BOT_TOKEN` | ✅ | ✅ | [@BotFather](https://t.me/BotFather) → /newbot |
 | `LINKEDIN_CLIENT_ID` | — | ✅ | LinkedIn App → Auth |
 | `LINKEDIN_CLIENT_SECRET` | — | ✅ | LinkedIn App → Auth |
 | `PUBLIC_BASE_URL` | — | ✅ | Например `http://1.2.3.4:8000` |
 | `POSTGRES_PASSWORD` | — | ✅ | `openssl rand -base64 32` |
-| `COST_PER_POST_CENTS` | `100` | `100` | Цена за один пост (100 = $1) |
-| `INITIAL_BALANCE_CENTS` | `300` | `300` | Бонус новому юзеру (300 = $3) |
-| `DAILY_NOTIFICATION_TIME` | `18:00` | `18:00` | Время daily nudge (HH:MM, UTC контейнера) |
+| `COST_PER_POST_CENTS` | `100` | `100` | Цена за пост (100 = $1.00) |
+| `REGEN_TEXT_CENTS` | `50` | `50` | Цена перегенерации текста (50 = $0.50) |
+| `INITIAL_BALANCE_CENTS` | `300` | `300` | Бонус новому юзеру (300 = $3.00) |
 | `SOCKS5_PROXY` | — | — | Например `socks5://user:pass@host:1080` (опционально) |
 | `DATABASE_URL` | автоматом | автоматом | Compose переопределяет — не трогай |
+
+> Время напоминаний больше **не задаётся через .env** — каждый юзер выбирает сам через `/settings` (хранится в БД: `users.notification_time` и `users.notification_days_json`).
 
 > При запуске через `docker compose` переменные `MOCK_LINKEDIN` и `DATABASE_URL` **переопределяются на уровне compose** — менять их в `.env` бесполезно.
 
@@ -262,41 +272,81 @@ LinkedIn принимает HTTP-redirect только для тестовых �
 
 ## Пользовательский флоу
 
+### Регистрация и привязка LinkedIn
+
 ```
 /start
-  ├─ если новый: создать User, начислить $3, показать welcome
-  └─ показать главное меню
+  ├─ если новый юзер: создаём User, начисляем $3 стартового баланса
+  ├─ если LinkedIn привязан: показываем welcome для авторизованного
+  └─ если не привязан: показываем onboarding-инструкцию + кнопку «🔗 Connect LinkedIn»
 
-[🔗 Привязать LinkedIn]  (кнопка появляется если не привязан)
-  ├─ DEV-режим: oauth_service.mock_authorize() → fake-токен → "✓ привязан"
-  └─ PROD-режим:
-       1. start_oauth() — генерит state, сохраняет в БД
-       2. бот шлёт https://www.linkedin.com/oauth/v2/authorization?…&state=…
-       3. юзер кликает → логинится → жмёт Allow
-       4. LinkedIn редиректит на /oauth/callback?code=…&state=…
-       5. FastAPI находит юзера по state, обменивает code на access_token
-       6. сохраняет токен + person_urn в БД
-       7. notify_oauth_success() шлёт пуш в TG: "✅ LinkedIn привязан"
+[🔗 Connect LinkedIn]
+  ├─ DEV (MOCK_LINKEDIN=true): моментально с фейк-токеном
+  └─ PROD:
+       1. backend выдаёт OAuth URL со state-токеном в БД
+       2. юзер логинится в LinkedIn → жмёт Allow
+       3. LinkedIn → /oauth/callback?code=…&state=…
+       4. FastAPI обменивает code на access_token, сохраняет к юзеру в БД
+       5. notify_oauth_success() → пуш в TG «✅ LinkedIn connected»
+```
 
-[🎯 Интересы]
-  └─ показать чекбокс-клавиатуру → каждый клик токлит slug → "✔️ Готово"
+### Генерация поста (трёхэтапный апрув)
 
-[✨ Сгенерить пост] или /generate
-  ├─ запросить тему / "🎲 Подобрать из интересов"
-  ├─ posting_service.run_pipeline():
-  │    1. проверить балaнс ≥ $1
-  │    2. создать Generation(PENDING)
-  │    3. generate_post_content() — Gemini + Google Search
-  │    4. generate_images() — gpt-image-1 (параллельно N штук)
-  │    5. (если PROD) LinkedInClient.publish() → post_id
-  │    6. charge_for_generation() — списать $1
-  │    7. update Generation → PUBLISHED
-  └─ показать юзеру картинку + текст + ссылку на LinkedIn пост
+Юзер видит **каждый этап** и может остановить процесс / перегенерировать.
 
-Каждый день в 18:00 (по серверу):
-  scheduler.daily_job()
-    └─ для всех User where daily_notifications=true and authorized and balance≥$1:
-        send_daily_nudge() — "🔔 Время для нового поста!"
+```
+[✨ Generate post] или /generate
+  │
+  ├─ Шаг 0 — выбор темы
+  │     ├─ ввести вручную  (FSM: waiting_for_topic)
+  │     └─ «🎲 Pick from my interests» (FSM: confirming_auto_topic)
+  │         ├─ показываем рандомную тему из интересов
+  │         ├─ [✅ Yes, let's go!] → к шагу 1
+  │         ├─ [🎲 Another topic]  → новая тема в том же сообщении
+  │         └─ [✏️ I'll type my own] → ручной ввод
+  │
+  ├─ Шаг 1 — текст (Phase 1, БЕЗ списания)
+  │     ├─ generate_text() → Gemini + web search → post + image_prompts
+  │     ├─ показываем юзеру полный текст
+  │     └─ FSM: reviewing_text
+  │         ├─ [🎨 Generate images]              → к шагу 2
+  │         ├─ [🔄 Regenerate text (−$0.50)]     → списываем $0.50, повторяем шаг 1
+  │         └─ [❌ Cancel]                        → выход (0 списано)
+  │
+  ├─ Шаг 2 — картинки (Phase 2, БЕЗ списания)
+  │     ├─ generate_images() — параллельно N штук через gpt-image-2
+  │     └─ если все упали, продолжаем без картинок
+  │
+  ├─ Шаг 3 — финальный апрув
+  │     ├─ шлём картинки (photo / media_group) + текст
+  │     └─ FSM: reviewing_full_post
+  │         ├─ [🚀 Publish to LinkedIn]  → к шагу 4
+  │         └─ [❌ Cancel]                 → выход (0 списано)
+  │
+  └─ Шаг 4 — публикация (Phase 3, СПИСАНИЕ $1)
+        ├─ проверяем balance ≥ $1
+        ├─ DEV: возвращаем mock-post_id
+        ├─ PROD: LinkedInClient.publish() → post_id
+        ├─ списываем $1 → пишем Generation(status=PUBLISHED)
+        └─ шлём «🚀 Published!» со ссылкой на LinkedIn-пост
+```
+
+### Ежедневные напоминания (per-user расписание)
+
+Юзер сам выбирает **во сколько** и **в какие дни** хочет напоминания через `/settings`.
+
+```
+APScheduler tick (каждую минуту в :00 секунд):
+  current_time  = "HH:MM" (локальное время сервера)
+  current_wday  = 0..6 (Mon..Sun)
+
+  → users where:
+       daily_notifications == True
+       AND linkedin_access_token IS NOT NULL
+       AND notification_time == current_time
+       AND current_wday IN notification_days
+       AND balance_cents >= COST_PER_POST_CENTS
+  → send_daily_nudge() каждому
 ```
 
 ---
@@ -305,16 +355,21 @@ LinkedIn принимает HTTP-redirect только для тестовых �
 
 | Параметр | Дефолт | Где меняется |
 |---|---|---|
-| Цена за пост | $1.00 (100 центов) | `.env` → `COST_PER_POST_CENTS` |
-| Стартовый баланс | $3.00 | `.env` → `INITIAL_BALANCE_CENTS` |
+| Цена за пост (текст+картинки+публикация) | $1.00 | `.env` → `COST_PER_POST_CENTS=100` |
+| Перегенерация текста (только текст) | $0.50 | `.env` → `REGEN_TEXT_CENTS=50` |
+| Стартовый баланс | $3.00 | `.env` → `INITIAL_BALANCE_CENTS=300` |
 | Способ оплаты | Mock | `backend/services/billing_service.py::topup_mock` |
-| Хранение | `users.balance_cents` (int) | Точность до цента |
+| Хранение | `users.balance_cents` (int) | точность до цента |
 
 ### Правила списания
 
-1. **Списание происходит ТОЛЬКО после успешной публикации.**
-2. Если pipeline упал на любом этапе — деньги не уходят, в БД остаётся `Generation(status=FAILED, error=…)`.
-3. Юзер с недостаточным балансом получит `InsufficientFunds` ещё до начала генерации (валидация на старте `run_pipeline`).
+1. **Основная сумма ($1) списывается только в Phase 3 — при подтверждении публикации.**
+   Юзер может отменить на любом из трёх шагов (текст / картинки / финал) — ничего не спишется.
+2. **Перегенерация текста ($0.50)** списывается мгновенно при нажатии кнопки «🔄 Regenerate text».
+   Если на это не хватает баланса — кнопка молча алерт-сообщение, генерация не запускается.
+3. Если pipeline упал на этапе публикации (LinkedIn API упал) — деньги не уходят,
+   в БД остаётся `Generation(status=FAILED, error=…)`.
+4. Юзер с балансом меньше $1 получает `InsufficientFunds` при попытке публикации.
 
 ### Mock-пополнение
 
@@ -325,6 +380,127 @@ LinkedIn принимает HTTP-redirect только для тестовых �
 1. Замени `topup_mock()` → создай pending Payment + сгенерь Stripe/ЮKassa URL
 2. Добавь FastAPI webhook `/webhooks/stripe` → обнови Payment → credit_balance
 3. В UI бота кнопка `[Пополнить]` теперь должна слать Stripe-ссылку, а не моментально начислять
+
+---
+
+## Отказоустойчивость
+
+### Fallback-цепочки моделей
+
+Если основная модель упала с **503 / UNAVAILABLE / overload / high demand / 404** — pipeline **молча переходит к следующей** в цепочке. Любая другая ошибка (неверный ключ, quota, сеть) — пробрасывается сразу.
+
+**Текст** (`backend/generator.py::TEXT_MODEL_CHAIN`):
+
+| Приоритет | Провайдер | Модель | Web search |
+|---|---|---|---|
+| 1 | Google | `gemini-3.1-flash-lite` | Google Search |
+| 2 | Google | `gemini-3.1-pro-preview` | Google Search |
+| 3 | Google | `gemini-3-pro-preview` | Google Search |
+| 4 | OpenAI | `gpt-4.5-mini` | Bing (web_search_preview) |
+| 5 | OpenAI | `gpt-5.4` | Bing |
+| 6 | OpenAI | `gpt-5.5` | Bing |
+
+OpenAI fallback использует **Responses API** с инструментом `web_search_preview` — модель тоже умеет ходить в интернет за свежими данными.
+
+**Картинки** (`backend/images.py::IMAGE_MODEL_CHAIN`):
+
+| Приоритет | Провайдер | Модель |
+|---|---|---|
+| 1 | OpenAI | `gpt-image-2` |
+| 2 | OpenAI | `gpt-image-1` |
+| 3 | Google | `nano-banana-pro-preview` |
+| 4 | Google | `gemini-3.1-flash-image-preview` |
+
+В логах при переключении:
+```
+[WARNING] backend.generator — Модель gemini/gemini-3.1-flash-lite недоступна (перегрузка), пробую следующую: 503 UNAVAILABLE
+[INFO   ] backend.generator — Пробую gemini/gemini-3.1-pro-preview для темы: 'LLM inference'
+[INFO   ] backend.generator — Успех: gemini/gemini-3.1-pro-preview (1456 символов поста, 2 картинки)
+```
+
+### Friendly errors для юзера
+
+Сырые stacktrace'ы юзеру не показываются. `_friendly_error()` в `handlers.py` мапит ошибки на короткие сообщения:
+
+| Внутренняя ошибка | Что видит юзер |
+|---|---|
+| `503 UNAVAILABLE` / `overload` | `All AI models are temporarily overloaded. Please try again in a few minutes.` |
+| `429 / rate limit / quota` | `Rate limit reached. Please wait a moment and try again.` |
+| `401 / 403 / invalid api key` | `API authentication error. Please contact support.` |
+| `network / timeout / SSL` | `Network error. Please try again.` |
+| LinkedIn token expired | `LinkedIn token has expired. Please reconnect via /start.` |
+| Insufficient funds | `Insufficient funds. Go to /balance to top up.` |
+| Прочее | `Something went wrong during generation. Please try again.` |
+
+Полный traceback пишется в `log.exception(...)`.
+
+### Graceful degradation для картинок
+
+`generate_images()` использует `asyncio.gather(..., return_exceptions=True)` — если одна из N картинок упала, остальные публикуются. В UI юзер просто видит меньше картинок, чем ожидалось, без ошибок.
+
+---
+
+## Уведомления и настройки
+
+### Per-user расписание
+
+Каждый юзер сам выбирает **во сколько** и **в какие дни** хочет напоминания.
+
+Хранится в БД:
+- `users.notification_time` — `"HH:MM"` (локальное время сервера), дефолт `"18:00"`
+- `users.notification_days_json` — JSON-список int (0=Mon, 6=Sun), дефолт `[0,1,2,3,4,5,6]`
+- `users.daily_notifications` — bool, on/off глобально
+
+### UI в боте — `/settings`
+
+```
+⚙️ Settings
+
+Reminders: ✅ enabled
+Time: 18:00
+Days: weekdays (Mon–Fri)
+Topics: AI Agents, LLMs
+
+[🔕 Disable reminders]
+[⏰ Change time]
+[📅 Change days]
+[🎯 Change topics]
+[« Back]
+```
+
+**Picker времени** — две страницы:
+```
+⏰ Pick the hour              ⏰ Pick the minutes
+                              Hour selected: 09:??
+[00] [01] [02] [03]           [09:00] [09:15]
+[04] [05] [06] [07]           [09:30] [09:45]
+[08] [09] [10] [11]           [« Choose another hour]
+...
+[20] [21] [22] [23]
+[« Back to settings]
+```
+
+**Picker дней** — чекбоксы с пресетами:
+```
+📅 Pick the days
+Currently: every day
+
+[✅ Mon] [✅ Tue] [✅ Wed] [✅ Thu]
+[✅ Fri] [✅ Sat] [✅ Sun]
+[📆 Every day] [💼 Weekdays] [🏖 Weekends]
+[✔️ Save]
+```
+
+Чекбоксы тогглятся inline (без отправки нового сообщения). Пресеты — для быстрого выбора популярных вариантов.
+
+### Шедулер
+
+`backend/bot/scheduler.py::notification_tick()` — APScheduler cron, фаерится **каждую минуту в `:00` секунд**. Внутри:
+1. Получает текущее `HH:MM` (server local time) и текущий weekday
+2. Запрашивает из БД юзеров, у которых `notification_time == HH:MM` и `weekday IN notification_days`, авторизованных в LinkedIn и с балансом ≥ `COST_PER_POST_CENTS`
+3. Шлёт каждому пуш через `send_daily_nudge()`
+
+**Часовой пояс**: всё в local time сервера. Если нужен per-user TZ — TODO, добавляется отдельным полем в `users`.
 
 ---
 
@@ -378,11 +554,13 @@ FastAPI слушает порт 8000.
 | `telegram_username` | string | @username |
 | `telegram_first_name` | string | имя из TG |
 | `linkedin_person_urn` | string | `urn:li:person:abc` |
-| `linkedin_access_token` | text | OAuth-токен |
+| `linkedin_access_token` | text | OAuth-токен (per-user) |
 | `linkedin_token_expires_at` | datetime | дата истечения токена |
 | `oauth_state` | string | временный state для OAuth |
-| `interests_json` | text | JSON-массив slugs |
-| `daily_notifications` | bool | вкл/выкл daily nudge |
+| `interests_json` | text | JSON: список slug'ов категорий |
+| `daily_notifications` | bool | вкл/выкл напоминаний (глобально) |
+| `notification_time` | string(5) | `"HH:MM"`, время напоминания (local server time) |
+| `notification_days_json` | text | JSON: список int 0..6 (0=Mon, 6=Sun) |
 | `balance_cents` | int | баланс в центах |
 | `created_at` / `updated_at` | datetime | стандартные timestamps |
 
@@ -394,8 +572,8 @@ FastAPI слушает порт 8000.
 | `user_id` | FK | → users.id |
 | `topic` | text | тема, которую попросил юзер |
 | `post_text` | text | сгенерированный текст |
-| `image_prompt` | text | промпт для картинки |
-| `image_path` | string | путь к PNG |
+| `image_prompts_json` | text | JSON: список промптов картинок |
+| `image_paths_json` | text | JSON: список путей к сгенерированным PNG |
 | `linkedin_post_id` | string | URN опубликованного поста |
 | `cost_cents` | int | сколько списано |
 | `status` | enum | pending / generated / published / failed |
@@ -712,12 +890,13 @@ URL в LinkedIn App и `PUBLIC_BASE_URL` в `.env` должны совпадат
 
 ## Известные ограничения / TODO
 
-- [ ] **Реальные платежи** — сейчас только mock. Прикрути Stripe webhook (см. [Биллинг](#биллинг)).
-- [ ] **Refresh-токены LinkedIn** — access_token живёт 60 дней, refresh не используется. Через 60 дней юзер должен сам перепривязать через `/start`.
-- [ ] **Auth на `/api/admin/stats`** — открытый эндпоинт.
-- [ ] **OAuth callback нотификация в TG** работает только в одном процессе. Для split-deploy нужен Redis pub/sub или объединить bot+api в один процесс.
+- [ ] **Реальные платежи** — сейчас mock. Прикрути Stripe webhook (см. [Биллинг](#биллинг)).
+- [ ] **Refresh-токены LinkedIn** — access_token живёт 60 дней, refresh не используется. Юзер сам перепривязывает через `/start` по истечении.
+- [ ] **Auth на `/api/admin/stats`** — открытый эндпоинт, закрой через nginx / internal port перед публикацией.
+- [ ] **OAuth callback нотификация в TG** работает только если bot и api в одном процессе (singleton bot instance). Для split-deploy нужен Redis pub/sub.
 - [ ] **LinkedIn endpoints устарели** — `/v2/ugcPosts` + `/v2/assets` ещё работают, но supported path: `/rest/posts` + `/rest/images?action=initializeUpload`.
-- [ ] **Rate limit на генерацию** — нет защиты от спама `/generate`. Юзер может попросить генерить пока баланс не кончится.
+- [ ] **Rate limit на генерацию** — нет защиты от спама `/generate` (только балансовый лимит).
+- [ ] **Per-user timezone** — сейчас все юзеры в server local time. Добавляется отдельным полем `users.timezone`.
 - [ ] **HTTPS termination** — не входит в compose. Поставь nginx/caddy впереди.
 - [ ] **Метрики Prometheus** — нет. Сейчас только `/api/admin/stats` с JSON.
 - [ ] **Sentry / error tracking** — нет интеграции, только локальный логгер.
