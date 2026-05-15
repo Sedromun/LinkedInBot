@@ -143,8 +143,11 @@ class Generation(Base):
     linkedin_post_id:  Mapped[Optional[str]]  = mapped_column(String(128), nullable=True)
 
     cost_cents: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    # native_enum=False — миграция создаёт VARCHAR + CHECK, без CREATE TYPE
     status: Mapped[GenerationStatus] = mapped_column(
-        Enum(GenerationStatus), default=GenerationStatus.PENDING, nullable=False
+        Enum(GenerationStatus, native_enum=False, length=32),
+        default=GenerationStatus.PENDING,
+        nullable=False,
     )
     error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
@@ -189,7 +192,8 @@ class Payment(Base):
     amount_cents: Mapped[int] = mapped_column(Integer, nullable=False)
     method:       Mapped[str] = mapped_column(String(32), default="mock", nullable=False)
     status: Mapped[PaymentStatus] = mapped_column(
-        Enum(PaymentStatus), default=PaymentStatus.COMPLETED, nullable=False
+        Enum(PaymentStatus, native_enum=False, length=32),
+        default=PaymentStatus.COMPLETED, nullable=False
     )
     note:    Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
 
